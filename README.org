@@ -1,0 +1,104 @@
+#+title: meow-ghostel - Meow integration for the Ghostel terminal
+#+author: Daniel Kraus
+
+[[https://github.com/meow-edit/meow][Meow]] modal-editing integration for the [[https://github.com/dakra/ghostel][Ghostel]] terminal emulator.
+
+The Ghostel buffer is a read-only render of the terminal grid, so meow's
+editing commands cannot modify it directly.  =meow-ghostel= instead routes
+them through the terminal: the selection-based editing commands (kill,
+change, replace, yank, undo) clamp their range to the typed input and
+apply it over the PTY — arrow keys, backspaces, and bracketed paste drive
+the shell's own line editor (readline / zle / fish).  Selection motions
+stay vanilla meow; point and region move freely over the rendered rows.
+
+* Installation
+
+From MELPA:
+
+#+begin_src emacs-lisp
+(use-package meow-ghostel
+  :ensure t
+  :after (ghostel meow)
+  :hook (ghostel-mode . meow-ghostel-mode))
+#+end_src
+
+Or from source (Emacs 30+):
+
+#+begin_src emacs-lisp
+(use-package meow-ghostel
+  :vc (:url "https://github.com/dakra/meow-ghostel" :rev :newest)
+  :after (ghostel meow)
+  :hook (ghostel-mode . meow-ghostel-mode))
+#+end_src
+
+* What it does
+
+Key names below refer to meow's suggested qwerty layout; the integration
+remaps the =meow-*= commands (never literal keys), so any layout works.
+
+- Ghostel starts in *INSERT state* (terminal input works normally); ESC
+  enters normal state.
+- Selection motions (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =x=, ...) move point and select
+  freely over the rendered rows; =j= stops at the live prompt row and
+  navigation in scrollback isn't yanked back by streaming output.
+- *Kill/change/replace* (=s=, =c=, =r=) clamp the selection to the typed input
+  and apply it via the shell (backspaces + bracketed paste); the killed
+  text still lands on the kill ring.  =s= without a selection kills to the
+  end of input.
+- *Insert/append/open* (=i=, =a=, =I=, =A=) drive the shell cursor to the target
+  before entering insert state; =A=/=I= go to the end/start of input (a
+  terminal has no "open line").
+- *Yank* (=p=) pastes at point via bracketed paste; *undo* (=u=) sends
+  readline undo (=Ctrl+_=).
+- Autosuggestions (zsh-autosuggestions, fish, nu/reedline hints) are never
+  accepted by accident: rightward motion and appends stop at the typed
+  input end, detected by the suggestion's color.
+- =SPC= (keypad/leader) works as usual in normal state; in insert state it
+  types into the terminal.
+- Insert-state Ctrl keys reach the shell through Ghostel's own semi-char
+  map (no extra passthrough layer), so =ghostel-keymap-exceptions= applies
+  as-is: =C-u= stays =universal-argument= (remove it from the exceptions if
+  you want readline kill-line).
+- Alt-screen programs (vim, less, htop) are unaffected: every command
+  falls through to vanilla =meow-*= there, and ESC routing follows
+  =meow-ghostel-escape=.
+- Outside semi-char input mode (Ghostel's =line= / =copy= / =emacs= / =char=
+  modes) commands fall through to vanilla meow as well; in line mode the
+  input is plain buffer text, so meow edits it directly.
+
+Not supported: BEACON state (its commands edit the buffer directly and
+hit the read-only guard), =meow-yank-pop= (a terminal echo cannot be
+swapped out; it signals a =user-error=), and redo.  Bind
+=ghostel-previous-prompt= / =ghostel-next-prompt= in your =meow-setup= if you
+want prompt navigation.
+
+* Customization
+
+- =meow-ghostel-initial-state= (default =insert=) — initial meow state for
+  new Ghostel buffers.
+- =meow-ghostel-escape= (default =auto=) — where insert-state ESC goes:
+  =auto= sends it to the terminal only in alt-screen mode (vim, less, …),
+  =terminal= always, =meow= never.  Cycle per buffer with
+  =meow-ghostel-toggle-send-escape=.
+
+* Development
+
+#+begin_src sh
+make            # byte-compile + ERT tests + lint
+make test       # ERT suite (test/meow-ghostel-test.el)
+make lint       # package-lint + checkdoc + docquotes
+make melpazoid  # full MELPA-style lint in a container
+#+end_src
+
+Dependencies are resolved from =MEOW_DIR= / =GHOSTEL_DIR= (defaulting to a
+local =~/.emacs.d/lib/ghostel= checkout when present, else shallow cache
+clones under =$XDG_CACHE_HOME=).  The native ERT tests need a ghostel
+checkout with its Zig module built and self-skip otherwise.
+
+Live end-to-end verification uses [[https://github.com/dakra/elate][elate]] scenarios under =test/elate/= that
+drive a real ghostel + shell session over a PTY and let the shell itself
+prove every edit landed — see [[file:test/elate/README.md][test/elate/README.md]].
+
+* License
+
+GPL-3.0-or-later; see [[file:LICENSE][LICENSE]].

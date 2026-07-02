@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NIX_EMACS_CI_REF: 868482a78575138aebb1b5c16a9266b95c800f2e
+
+jobs:
+  byte-compile:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version:
+          - '28.2'
+          - '29.4'
+          - 'snapshot'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+          git clone --depth 1 https://github.com/meow-edit/meow.git /tmp/meow
+          git clone --depth 1 https://github.com/dakra/ghostel.git /tmp/ghostel
+
+      - name: Byte-compile
+        run: |
+          make EMACSFLAGS="-L /tmp/compat" MEOW_DIR=/tmp/meow GHOSTEL_DIR=/tmp/ghostel \
+            byte-compile
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version:
+          - '29.4'
+          - 'snapshot'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+          git clone --depth 1 https://github.com/meow-edit/meow.git /tmp/meow
+          git clone --depth 1 https://github.com/dakra/ghostel.git /tmp/ghostel
+
+      - name: Run tests
+        # No native module is built here, so the native ERT tests self-skip.
+        run: |
+          make EMACSFLAGS="-L /tmp/compat" MEOW_DIR=/tmp/meow GHOSTEL_DIR=/tmp/ghostel \
+            test
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: '29.4'
+        run: bash .github/scripts/install-emacs.sh
+
+      - name: Install dependencies
+        run: |
+          git clone --depth 1 https://github.com/meow-edit/meow.git /tmp/meow
+          git clone --depth 1 https://github.com/dakra/ghostel.git /tmp/ghostel
+
+      - name: Run package-lint, checkdoc, docquotes
+        # `make package-lint' self-provisions its deps (package-lint, meow,
+        # and a local ghostel install) into an isolated package-user-dir.
+        run: make MEOW_DIR=/tmp/meow GHOSTEL_DIR=/tmp/ghostel package-lint checkdoc docquotes

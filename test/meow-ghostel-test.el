@@ -183,11 +183,20 @@ verified here by looking up the remap rather than a literal key."
   "Activation installs the buffer-local `meow--kbd-*' overrides.
 Without them meow's kbd-macro commands resolve through ghostel's
 semi-char map to PTY senders (`meow-next' would browse shell history,
-`meow-save' would type M-w into the shell)."
+`meow-save' would type M-w into the shell).  Each value must be a key
+sequence string that resolves to the override command via
+`key-binding': released meow versions feed the value straight to
+`read-kbd-macro', which rejects command symbols.  The lookup here
+passes NO-REMAP: at runtime command remapping still applies on top,
+so e.g. `yank' resolves to `ghostel-yank' while the semi-char map is
+active — the same result a real key bound to `yank' would give."
   (meow-ghostel-test--with-meow-buffer
    (dolist (override meow-ghostel--kbd-overrides)
      (should (local-variable-p (car override)))
-     (should (eq (cdr override) (symbol-value (car override)))))
+     (let ((value (symbol-value (car override))))
+       (should (stringp value))
+       (should (eq (cdr override)
+                   (key-binding (read-kbd-macro value) nil t)))))
    (should (local-variable-p 'meow--delete-region-function))
    (should (eq #'meow-ghostel--delete-region meow--delete-region-function))
    (should (eq #'meow-ghostel--insert meow--insert-function))))
@@ -1245,8 +1254,8 @@ the PTY (ghostel's semi-char map binds M-w to a sender)."
 
 (ert-deftest meow-ghostel-test-kill-edits-buffer-in-line-mode ()
   "Kill in line mode falls through to vanilla meow and edits the text.
-The kbd override resolves `meow--kbd-kill-region' to `kill-region'
-directly, so line mode's own keymap cannot misroute it."
+The kbd override resolves `meow--kbd-kill-region' to `kill-region',
+so line mode's own keymap cannot misroute it."
   (meow-ghostel-test--with-line-mode "hello world" 1 12
     (meow--switch-state 'normal)
     (let ((kill-ring nil)

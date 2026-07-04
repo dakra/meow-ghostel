@@ -48,7 +48,9 @@
 (defun meow-setup ()
   "Meow's documented qwerty layout (KEYBINDING_QWERTY.org)."
   (setq meow-cheatsheet-layout meow-cheatsheet-layout-qwerty)
-  (meow-motion-define-key
+  ;; The pre-1.6 name; meow master keeps it as an alias, so this loads
+  ;; against both released meow and git master.
+  (meow-motion-overwrite-define-key
    '("j" . meow-next)
    '("k" . meow-prev)
    '("<escape>" . ignore))

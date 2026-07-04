@@ -51,6 +51,13 @@ jobs:
         emacs_version:
           - '29.4'
           - 'snapshot'
+        # Newest release (the Package-Requires minimum users install
+        # from ELPA) and git master; their internals differ, e.g.
+        # `meow--execute-kbd-macro' accepts command symbols only on
+        # master.
+        meow_ref:
+          - 'v1.5.0'
+          - 'master'
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
@@ -65,7 +72,8 @@ jobs:
       - name: Install dependencies
         run: |
           git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
-          git clone --depth 1 https://github.com/meow-edit/meow.git /tmp/meow
+          git clone --depth 1 --branch "${{ matrix.meow_ref }}" \
+            https://github.com/meow-edit/meow.git /tmp/meow
           git clone --depth 1 https://github.com/dakra/ghostel.git /tmp/ghostel
 
       - name: Run tests

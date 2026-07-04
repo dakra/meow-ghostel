@@ -775,15 +775,55 @@ mode is buffer-local; see `meow-ghostel-escape' for the default."
     (message "meow-ghostel ESC mode: %s" target)))
 
 
-;; Keymap.  Only `[remap meow-*]' bindings, never literal keys: meow has
+;; Keymap.  Only `[remap meow-*]' bindings and the synthetic events
+;; backing the `meow--kbd-*' overrides, never literal keys: meow has
 ;; no default layout, so remaps route whatever keys the user's
 ;; `meow-setup' picked through the PTY variants.  This is an ordinary
 ;; minor-mode map — command remapping is looked up across all active
 ;; keymaps, and meow's emulation-mode maps bind no `[remap meow-*]'
 ;; entries, so these apply even though those maps have higher priority.
 
+(defconst meow-ghostel--kbd-overrides
+  ;; ghostel's semi-char map binds C-<letter> and M-<printable> to PTY
+  ;; senders, so meow's default `meow--kbd-*' sequences would resolve to
+  ;; those and type bytes into the shell (`meow-save' would send M-w,
+  ;; `meow-next' would browse shell history).  Each variable is pointed
+  ;; at a synthetic function-key event bound to COMMAND below, because
+  ;; `meow--execute-kbd-macro' only accepts key-sequence strings
+  ;; (released meow versions pass the value straight to
+  ;; `read-kbd-macro', so a command symbol signals wrong-type-argument).
+  '((meow--kbd-backward-char       . backward-char)
+    (meow--kbd-forward-char        . forward-char)
+    (meow--kbd-backward-line       . previous-line)
+    (meow--kbd-forward-line        . meow-ghostel-next-line)
+    (meow--kbd-back-to-indentation . meow-ghostel-back-to-indentation)
+    (meow--kbd-scoll-up            . scroll-up-command)
+    (meow--kbd-scoll-down          . scroll-down-command)
+    (meow--kbd-kill-ring-save      . kill-ring-save)
+    (meow--kbd-kill-region         . kill-region)
+    (meow--kbd-yank                . yank)
+    (meow--kbd-yank-pop            . yank-pop)
+    (meow--kbd-delete-char         . delete-char)
+    (meow--kbd-kill-line           . kill-line)
+    (meow--kbd-kill-whole-line     . kill-whole-line)
+    (meow--kbd-undo                . undo))
+  "Buffer-local `meow--kbd-*' overrides installed by `meow-ghostel-mode'.
+Each entry is (VARIABLE . COMMAND); VARIABLE is set to the kbd string
+of the synthetic event that `meow-ghostel-mode-map' binds to COMMAND.")
+
+(defun meow-ghostel--kbd-event (variable)
+  "Return the synthetic event symbol backing kbd override VARIABLE."
+  (intern (concat "meow-ghostel-kbd-"
+                  (string-remove-prefix "meow--kbd-" (symbol-name variable)))))
+
 (defvar meow-ghostel-mode-map
   (let ((map (make-sparse-keymap)))
+    ;; Synthetic function-key events for the `meow--kbd-*' overrides.
+    ;; Never typed; reached only via `key-binding' from
+    ;; `meow--execute-kbd-macro'.
+    (dolist (override meow-ghostel--kbd-overrides)
+      (define-key map (vector (meow-ghostel--kbd-event (car override)))
+                  (cdr override)))
     (define-key map [remap meow-insert]          #'meow-ghostel-insert)
     (define-key map [remap meow-append]          #'meow-ghostel-append)
     (define-key map [remap meow-open-below]      #'meow-ghostel-open-below)
@@ -812,7 +852,8 @@ mode is buffer-local; see `meow-ghostel-escape' for the default."
     (define-key map [remap meow-insert-exit]     #'meow-ghostel-escape)
     map)
   "Keymap for `meow-ghostel-mode'.
-Contains only `[remap meow-*]' bindings; see the commentary.")
+Contains only `[remap meow-*]' bindings and the synthetic events
+backing `meow-ghostel--kbd-overrides'; see the commentary.")
 
 
 ;; Minor mode
@@ -825,30 +866,6 @@ Decides whether the global advice can be removed on the last disable."
       (when (and (not (eq b except-buffer))
                  (buffer-local-value 'meow-ghostel-mode b))
         (throw 'found t)))))
-
-(defconst meow-ghostel--kbd-overrides
-  ;; ghostel's semi-char map binds C-<letter> and M-<printable> to PTY
-  ;; senders, so meow's kbd-macro commands would resolve to those and
-  ;; type bytes into the shell (`meow-save' would send M-w, `meow-next'
-  ;; would browse shell history).  Function symbols bypass the key
-  ;; lookup entirely; `meow--execute-kbd-macro' calls them directly.
-  '((meow--kbd-backward-char       . backward-char)
-    (meow--kbd-forward-char        . forward-char)
-    (meow--kbd-backward-line       . previous-line)
-    (meow--kbd-forward-line        . meow-ghostel-next-line)
-    (meow--kbd-back-to-indentation . meow-ghostel-back-to-indentation)
-    (meow--kbd-scoll-up            . scroll-up-command)
-    (meow--kbd-scoll-down          . scroll-down-command)
-    (meow--kbd-kill-ring-save      . kill-ring-save)
-    (meow--kbd-kill-region         . kill-region)
-    (meow--kbd-yank                . yank)
-    (meow--kbd-yank-pop            . yank-pop)
-    (meow--kbd-delete-char         . delete-char)
-    (meow--kbd-kill-line           . kill-line)
-    (meow--kbd-kill-whole-line     . kill-whole-line)
-    (meow--kbd-undo                . undo))
-  "Buffer-local `meow--kbd-*' overrides installed by `meow-ghostel-mode'.
-Each entry is (VARIABLE . COMMAND).")
 
 ;;;###autoload
 (define-minor-mode meow-ghostel-mode
@@ -869,7 +886,8 @@ Enabling installs global advice while any buffer has the mode enabled."
         ;; Mouse selection stays governed by `ghostel-mouse-drag-input-mode'.
         (setq-local ghostel-mark-activation-input-mode nil)
         (dolist (override meow-ghostel--kbd-overrides)
-          (set (make-local-variable (car override)) (cdr override)))
+          (set (make-local-variable (car override))
+               (format "<%s>" (meow-ghostel--kbd-event (car override)))))
         (setq-local meow--delete-region-function #'meow-ghostel--delete-region
                     meow--insert-function #'meow-ghostel--insert)
         (add-hook 'meow-insert-enter-hook

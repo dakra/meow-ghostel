@@ -425,6 +425,40 @@ while the user reads scrollback."
      (meow-ghostel--around-redraw #'ignore 'fake)
      (should (= (point) (point-min))))))
 
+(ert-deftest meow-ghostel-test-around-redraw-passes-args-and-return ()
+  "The advice forwards trailing arguments (FULL, FORCE-SYNC on ghostel
+0.44+) and returns the original's value; ghostel uses it to clear its
+pending-redraw flags."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "hello world")
+   (setq-local ghostel--term 'fake)
+   (setq-local ghostel--cursor-pos '(11 . 0))
+   (setq-local ghostel--cursor-char-pos 12)
+   (meow--switch-state 'normal)
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+     (let (received)
+       (should (eq 'rendered
+                   (meow-ghostel--around-redraw
+                    (lambda (&rest a) (setq received a) 'rendered)
+                    'fake t t)))
+       (should (equal '(fake t t) received))))))
+
+(ert-deftest meow-ghostel-test-around-redraw-passes-args-in-alt-screen ()
+  "The alt-screen bypass branch also forwards trailing arguments and
+returns the original's value."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "hello world")
+   (setq-local ghostel--term 'fake)
+   (setq-local ghostel--cursor-pos '(11 . 0))
+   (setq-local ghostel--cursor-char-pos 12)
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) t)))
+     (let (received)
+       (should (eq 'rendered
+                   (meow-ghostel--around-redraw
+                    (lambda (&rest a) (setq received a) 'rendered)
+                    'fake t t)))
+       (should (equal '(fake t t) received))))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: anchor-inhibit predicate
 ;; -----------------------------------------------------------------------
@@ -1521,6 +1555,14 @@ against a real libghostty terminal."
     (let ((inhibit-read-only t))
       (ghostel--redraw term t))
     (should (= 11 (current-column)))))
+
+(ert-deftest meow-ghostel-test-redraw-force-sync-native ()
+  "Native: the advice accepts the FORCE-SYNC argument (ghostel 0.44+)
+and passes the module's completed-rendering result through."
+  (meow-ghostel-test--with-buffer 5 40 "hello world"
+    (meow--switch-state 'normal)
+    (let ((inhibit-read-only t))
+      (should (ghostel--redraw term t t)))))
 
 ;; -----------------------------------------------------------------------
 ;; Runner

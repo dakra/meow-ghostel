@@ -146,18 +146,21 @@ Comparable to `ghostel--cursor-pos''s row."
 ;; (where typed chars land there); an active selection is restored around
 ;; the repaint.
 
-(defun meow-ghostel--around-redraw (orig-fn term &optional full)
+(defun meow-ghostel--around-redraw (orig-fn term &rest args)
   "Apply meow point/selection handling around `ghostel--redraw'.
-ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
+ORIG-FN is the advised function, called with TERM and ARGS (FULL, and
+FORCE-SYNC on ghostel 0.44+); its value is returned so callers can see
+whether rendering completed.  Skipped in alt-screen (1049)."
   (if (and meow-ghostel-mode
            (not (ghostel--mode-enabled term 1049)))
       (let* ((region-p (region-active-p))
-             (saved-mark (and region-p (mark t))))
+             (saved-mark (and region-p (mark t)))
+             result)
         ;; The repaint's buffer edits set `deactivate-mark'; without
         ;; binding it, streaming output would drop an active selection
         ;; at the end of the current command.
         (let ((deactivate-mark nil))
-          (funcall orig-fn term full))
+          (setq result (apply orig-fn term args)))
         ;; Don't drag point to the cursor while the user reads scrollback;
         ;; redisplay would yank the viewport back to the bottom each frame.
         ;; (No window showing the buffer → treat as following.)
@@ -166,8 +169,9 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
                      (or (null win) (ghostel--window-anchored-p win))))
           (meow-ghostel--reset-cursor-point))
         (when saved-mark
-          (set-marker (mark-marker) (min saved-mark (point-max)))))
-    (funcall orig-fn term full)))
+          (set-marker (mark-marker) (min saved-mark (point-max))))
+        result)
+    (apply orig-fn term args)))
 
 (defun meow-ghostel--anchor-inhibit (_window force)
   "Veto ghostel's redraw anchor while point roams off the live cursor.

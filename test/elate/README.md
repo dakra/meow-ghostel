@@ -14,6 +14,10 @@ output — so the shell/REPL itself proves the edit landed.
   `ghostel-macos-login-shell`. `meow` resolves from `ELATE_MEOW_DIR`, `../meow`, or
   `$XDG_CACHE_HOME/meow`; `ghostel` from `ELATE_GHOSTEL_DIR`, `../ghostel`, or
   `$XDG_CACHE_HOME/ghostel` — the ghostel checkout must have its native module built.
+  A second `meow-normal-define-key` block adds `C`/`S` (kill-word forward/backward),
+  `T`/`V` (kill-symbol forward/backward) and `N`/`M` (open-above/below-visual) on keys
+  the qwerty suggestion leaves free: meow-ghostel remaps those six commands but the
+  suggested layout binds none of them, so the matrix needs a way to press them.
 - `matrix/meow-shells.json` — **one templated scenario driven once per shell** (`bash,
   zsh, fish, nu`). Meow is selection-first, so word ops select backward from the input
   end with `b` (back-word) before `s`/`c`/`r`; `x s`/`x c` are the line kill/change;
@@ -23,6 +27,12 @@ output — so the shell/REPL itself proves the edit landed.
   meow-ghostel adds no insert-state passthrough layer, so `C-u` follows
   `ghostel-keymap-exceptions` (Emacs `universal-argument`, not shell kill-line) —
   the passthrough group uses `C-a` + `C-k` instead.
+  The `S`/`C`/`V`/`T` groups cover the thing kills, whose PTY routing rests entirely
+  on the remaps: their `kill-region` succeeds against the render (ghostel holds
+  `inhibit-read-only` non-nil on a live terminal), so `meow-kill-thing`'s read-only
+  fallback never runs and an unremapped kill leaves the shell's line untouched.
+  `M`/`N` cover the visual opens — `M` fails loudly if `meow-open-below-visual`
+  reaches ghostel's RET sender, which executes the command line as typed.
 - `matrix/meow-python3.json` — the REPL, kept separate because it has no `echo` and
   PyREPL editing doesn't word-split cleanly (word-heavy ops omitted).
 - `matrix/meow-boundary-<shell>-ghostel.json` — the input-region boundary suite

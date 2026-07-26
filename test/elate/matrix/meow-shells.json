@@ -273,6 +273,132 @@
       "timeout": 8.0
     },
     {
+      "group": "S-backward-kill-word",
+      "comment": "meow-backward-kill-word from the input end. It reaches the PTY only via the remap: its kill-region succeeds against the render (ghostel holds inhibit-read-only non-nil), so meow-kill-thing's read-only fallback never runs and the shell would keep the word."
+    },
+    {
+      "type": "{{echo}} m20ok DELME"
+    },
+    {
+      "keys": "<escape> S"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m20ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "C-kill-word",
+      "comment": "b puts point at the start of the last word, C (meow-kill-word) kills it forward"
+    },
+    {
+      "type": "{{echo}} m21ok DELME"
+    },
+    {
+      "keys": "<escape> b C"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m21ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "V-backward-kill-symbol",
+      "comment": "meow-backward-kill-symbol takes the whole hyphenated token; the word variant would leave DEL- behind"
+    },
+    {
+      "type": "{{echo}} m22ok DEL-ME"
+    },
+    {
+      "keys": "<escape> V"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m22ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "T-kill-symbol",
+      "comment": "B selects the last symbol backward, T (meow-kill-symbol) kills it forward"
+    },
+    {
+      "type": "{{echo}} m23ok DEL-ME"
+    },
+    {
+      "keys": "<escape> B T"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m23ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "M-open-below-visual",
+      "comment": "meow-open-below-visual must not execute the line: unremapped its RET keyboard macro resolves through ghostel's semi-char map to the PTY, running the command as typed."
+    },
+    {
+      "type": "{{echo}} m24"
+    },
+    {
+      "keys": "<escape> M"
+    },
+    {
+      "type": "-ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m24-ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "N-open-above-visual",
+      "comment": "meow-open-above-visual must not paste a newline into the line editor: unremapped its newline lands in the render and ghostel forwards it to the shell."
+    },
+    {
+      "type": "m25ok"
+    },
+    {
+      "keys": "<escape> N"
+    },
+    {
+      "type": "{{echo}} "
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m25ok$",
+      "timeout": 8.0
+    },
+    {
       "group": "y-r",
       "comment": "b y saves a word; b r replaces another word with it"
     },

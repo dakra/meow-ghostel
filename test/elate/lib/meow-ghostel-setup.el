@@ -133,6 +133,18 @@
    '("<escape>" . ignore)))
 
 (meow-setup)
+
+;; Supplementary bindings, NOT part of the qwerty suggestion: these commands
+;; have no suggested key, but meow-ghostel remaps them, so the matrix needs a
+;; way to press them.  They sit on keys `meow-setup' above leaves free.
+(meow-normal-define-key
+ '("C" . meow-kill-word)
+ '("S" . meow-backward-kill-word)
+ '("T" . meow-kill-symbol)
+ '("V" . meow-backward-kill-symbol)
+ '("N" . meow-open-above-visual)
+ '("M" . meow-open-below-visual))
+
 (meow-global-mode 1)
 
 (require 'ghostel)

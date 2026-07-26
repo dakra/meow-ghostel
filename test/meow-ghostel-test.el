@@ -24,9 +24,29 @@
 ;; -----------------------------------------------------------------------
 
 (defun meow-ghostel-test--insert (&rest args)
-  "Insert ARGS as renderer-owned test setup text."
-  (let ((inhibit-read-only t))
+  "Insert ARGS as renderer-owned test setup text.
+`inhibit-modification-hooks' keeps ghostel's insert-forwarding hook off
+the text: it treats a foreign insertion as user input, deleting it from
+the buffer and sending it to the PTY."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (apply #'insert args)))
+
+(defun meow-ghostel-test--live-process ()
+  "Return a live process to bind to `ghostel--process'.
+The guard predicates call `process-live-p', so a sentinel will not do; a
+pipe process is live without spawning anything.  Callers must
+`delete-process' it."
+  (make-pipe-process :name "meow-ghostel-test" :buffer nil :noquery t))
+
+(defun meow-ghostel-test--go-live (proc)
+  "Bind PROC as the buffer's terminal process and sync the read-only state.
+A live process in a terminal-input mode is what makes ghostel hold
+`inhibit-read-only' non-nil, so fixtures must set it to reproduce the
+buffer state meow commands actually run against."
+  (setq-local ghostel--process proc)
+  (when (fboundp 'ghostel--sync-inhibit-read-only)
+    (ghostel--sync-inhibit-read-only)))
 
 (defmacro meow-ghostel-test--with-buffer (rows cols text &rest body)
   "Create a ghostel buffer with ROWS x COLS, feed TEXT, render, then run BODY.
@@ -38,17 +58,21 @@ without it the test is skipped (e.g. CI's elisp-only `test-meow' job)."
      (skip-unless (fboundp 'ghostel--new))
      (let* ((ghostel-max-scrollback 100)
             (buf (ghostel--create " *meow-ghostel-test*" nil ,rows ,cols))
-            (term (buffer-local-value 'ghostel--term buf)))
+            (term (buffer-local-value 'ghostel--term buf))
+            (proc (meow-ghostel-test--live-process)))
        (unwind-protect
            (with-current-buffer buf
+             (meow-ghostel-test--go-live proc)
              (ghostel--write-vt term ,text)
              (meow-mode 1)
              (meow-ghostel-mode 1)
-             (let ((inhibit-read-only t))
+             (let ((inhibit-read-only t)
+                   (inhibit-modification-hooks t))
                (ghostel--redraw term t))
              (cl-macrolet ((insert (&rest args)
                              `(meow-ghostel-test--insert ,@args)))
                ,@body))
+         (delete-process proc)
          (when (buffer-live-p buf)
            (kill-buffer buf))))))
 
@@ -78,23 +102,27 @@ end of INPUT.  Runs BODY in the buffer in meow NORMAL state.
 Mocks the terminal handle and viewport so the input-region helpers can
 derive prompt boundaries and viewport rows without a native module."
   (declare (indent 2))
-  `(let ((buf (generate-new-buffer " *meow-ghostel-test-input*")))
+  `(let ((buf (generate-new-buffer " *meow-ghostel-test-input*"))
+         (proc (meow-ghostel-test--live-process)))
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
-           (let ((inhibit-read-only t))
+           (let ((inhibit-read-only t)
+                 (inhibit-modification-hooks t))
              (insert (propertize ,prompt 'ghostel-prompt t))
              (insert ,input))
            (setq ghostel--term 'fake)
            (setq ghostel--term-rows 1)
            (setq ghostel--cursor-char-pos (point))
            (setq ghostel--cursor-pos (cons (current-column) 0))
+           (meow-ghostel-test--go-live proc)
            (meow-mode 1)
            (meow-ghostel-mode 1)
            (meow--switch-state 'normal)
            (cl-letf (((symbol-function 'ghostel--mode-enabled)
                       (lambda (&rest _) nil)))
              ,@body))
+       (delete-process proc)
        (kill-buffer buf))))
 
 (defmacro meow-ghostel-test--with-cursor-fixture (prompt typed trail &rest body)
@@ -103,11 +131,13 @@ with `ghostel--cursor-char-pos' at the TYPED/TRAIL boundary so TRAIL
 occupies cells to the right of the cursor.  Runs BODY in NORMAL state
 with the terminal mocked."
   (declare (indent 3))
-  `(let ((buf (generate-new-buffer " *meow-ghostel-test-cursor*")))
+  `(let ((buf (generate-new-buffer " *meow-ghostel-test-cursor*"))
+         (proc (meow-ghostel-test--live-process)))
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
-           (let ((inhibit-read-only t))
+           (let ((inhibit-read-only t)
+                 (inhibit-modification-hooks t))
              (insert (propertize ,prompt 'ghostel-prompt t))
              (insert (propertize ,typed 'ghostel-input t))
              (setq ghostel--cursor-char-pos (point))
@@ -115,12 +145,14 @@ with the terminal mocked."
              (insert (propertize ,trail 'ghostel-input t)))
            (setq ghostel--term 'fake)
            (setq ghostel--term-rows 1)
+           (meow-ghostel-test--go-live proc)
            (meow-mode 1)
            (meow-ghostel-mode 1)
            (meow--switch-state 'normal)
            (cl-letf (((symbol-function 'ghostel--mode-enabled)
                       (lambda (&rest _) nil)))
              ,@body))
+       (delete-process proc)
        (kill-buffer buf))))
 
 (defmacro meow-ghostel-test--with-line-mode (input-text input-start input-end &rest body)
@@ -155,6 +187,17 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
 ;; -----------------------------------------------------------------------
 ;; Test: mode activation
 ;; -----------------------------------------------------------------------
+
+(ert-deftest meow-ghostel-test-fixture-reproduces-live-terminal ()
+  "The terminal fixtures reproduce the buffer state of a live shell.
+Ghostel holds `inhibit-read-only' non-nil there, which is what lets
+meow's editing commands edit the render; without it the PTY-routing
+tests below would pass against the old read-only barrier instead."
+  (skip-unless (fboundp 'ghostel--sync-inhibit-read-only))
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (should (process-live-p ghostel--process))
+    (should buffer-read-only)
+    (should inhibit-read-only)))
 
 (ert-deftest meow-ghostel-test-mode-activation ()
   "`meow-ghostel-mode' wires hooks, advice, remaps, and buffer-locals.
@@ -658,7 +701,8 @@ command reads `ghostel--cursor-pos'."
 (ert-deftest meow-ghostel-test-delete-input-region-excludes-soft-wraps ()
   "Soft-wrap newlines (renderer artifacts) don't cost a backspace."
   (meow-ghostel-test--with-input-fixture "$ " "hello"
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       ;; Renderer-inserted wrap newline inside the range.
       (goto-char 6)
       (insert (propertize "\n" 'ghostel-wrap t)))
@@ -852,6 +896,48 @@ a terminal executes the current command line."
       (should (= 3 target))
       (should (meow-insert-mode-p)))))
 
+(ert-deftest meow-ghostel-test-open-above-visual-remapped ()
+  "`meow-open-above-visual' is remapped and targets the input start.
+Unremapped it reaches `newline' directly, which lands in the render and
+is forwarded to the shell as a stray continuation line."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (should (eq #'meow-ghostel-open-above-visual
+                (command-remapping 'meow-open-above-visual)))
+    (goto-char 6)
+    (let ((target nil))
+      (cl-letf (((symbol-function 'meow-ghostel-goto-input-position)
+                 (lambda (pos &rest _) (setq target pos) (goto-char pos) t)))
+        (meow-ghostel-open-above-visual))
+      (should (= 3 target))
+      (should (meow-insert-mode-p)))))
+
+(ert-deftest meow-ghostel-test-open-below-visual-remapped ()
+  "`meow-open-below-visual' is remapped and targets the input end.
+Unremapped its RET keyboard macro resolves through ghostel's semi-char
+map to the PTY, executing the current command line."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (should (eq #'meow-ghostel-open-below-visual
+                (command-remapping 'meow-open-below-visual)))
+    (goto-char 4)
+    (let ((target nil))
+      (cl-letf (((symbol-function 'meow-ghostel-goto-input-position)
+                 (lambda (pos &rest _) (setq target pos) (goto-char pos) t)))
+        (meow-ghostel-open-below-visual))
+      (should (= (meow-ghostel--input-end) target))
+      (should (meow-insert-mode-p)))))
+
+(ert-deftest meow-ghostel-test-open-visual-remaps-fall-through ()
+  "Outside semi-char the visual remaps defer to their vanilla commands."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (setq-local ghostel--input-mode 'copy)
+    (dolist (pair '((meow-ghostel-open-above-visual . meow-open-above-visual)
+                    (meow-ghostel-open-below-visual . meow-open-below-visual)))
+      (let ((called nil))
+        (cl-letf (((symbol-function (cdr pair))
+                   (lambda (&rest _) (interactive) (setq called t))))
+          (funcall (car pair)))
+        (should called)))))
+
 (ert-deftest meow-ghostel-test-insert-enter-hook-syncs-column-same-row ()
   "Direct insert-state entry drives the PTY cursor to point (same row)."
   (meow-ghostel-test--with-input-fixture "$ " "hello"
@@ -1001,20 +1087,95 @@ Sends arrows first when point is off the cursor, then a delete."
       (setq sent (nreverse sent))
       (should (equal '("backspace" . "") (car (last sent)))))))
 
-(ert-deftest meow-ghostel-test-kill-word-routes-via-delete-region-function ()
-  "`meow-kill-word' PTY-routes through `meow--delete-region-function'.
-Its primary `kill-region' path signals on the read-only buffer and
-falls back to `meow--delete-region' — carried by our buffer-local
-function variable, no remap involved."
+(ert-deftest meow-ghostel-test-kill-word-remapped ()
+  "`meow-kill-word' is remapped so the kill reaches the PTY.
+Vanilla `meow-kill-word' would kill the render instead: ghostel holds
+`inhibit-read-only' non-nil on a live terminal, so the `kill-region' in
+`meow-kill-thing' succeeds and never reaches `meow--delete-region'."
+  (meow-ghostel-test--with-input-fixture "$ " "hello world"
+    (should (eq #'meow-ghostel-kill-word (command-remapping 'meow-kill-word)))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          (current-prefix-arg nil)
+          (keys-sent '()))
+      (goto-char 3)                     ; start of "hello"
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        ;; Dispatch the way a keypress does, through the remap.
+        (call-interactively (or (command-remapping 'meow-kill-word)
+                                #'meow-kill-word)))
+      (should (= 5 (cl-count "backspace" keys-sent :test #'equal)))
+      (should (equal "hello" (car kill-ring))))))
+
+(ert-deftest meow-ghostel-test-backward-kill-word-remapped ()
+  "`meow-backward-kill-word' PTY-routes and needs its own remap.
+It reaches `meow-kill-word' by plain funcall, which no remap intercepts."
+  (meow-ghostel-test--with-input-fixture "$ " "hello world"
+    (should (eq #'meow-ghostel-backward-kill-word
+                (command-remapping 'meow-backward-kill-word)))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          (keys-sent '()))
+      (goto-char 8)                     ; end of "hello"
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (meow-ghostel-backward-kill-word 1))
+      (should (= 5 (cl-count "backspace" keys-sent :test #'equal)))
+      (should (equal "hello" (car kill-ring))))))
+
+(ert-deftest meow-ghostel-test-kill-symbol-remapped ()
+  "`meow-kill-symbol' and its backward variant are PTY-routed remaps."
+  (meow-ghostel-test--with-input-fixture "$ " "foo-bar baz"
+    (should (eq #'meow-ghostel-kill-symbol
+                (command-remapping 'meow-kill-symbol)))
+    (should (eq #'meow-ghostel-backward-kill-symbol
+                (command-remapping 'meow-backward-kill-symbol)))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          (keys-sent '()))
+      (goto-char 3)                     ; start of "foo-bar"
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (meow-ghostel-kill-symbol 1))
+      (should (= 7 (cl-count "backspace" keys-sent :test #'equal)))
+      (should (equal "foo-bar" (car kill-ring))))))
+
+(ert-deftest meow-ghostel-test-kill-word-clamps-to-input ()
+  "A thing kill stops at input-end instead of running past it.
+Input-end is stubbed, as in `meow-ghostel-test-clamp': the fixture's
+typed run all carries `ghostel-input', so the real one returns
+`point-max' and nothing would be left to clamp.  Unclamped this kill
+reaches the end of \"world\" and sends 11 backspaces."
   (meow-ghostel-test--with-input-fixture "$ " "hello world"
     (let ((kill-ring nil)
           (kill-ring-yank-pointer nil)
           (keys-sent '()))
-      (goto-char 3)                     ; start of "hello"
-      (cl-letf (((symbol-function 'ghostel--send-encoded)
-                 (lambda (key _mods &rest _) (push key keys-sent))))
-        (meow-kill-word 1))
-      (should (= 5 (cl-count "backspace" keys-sent :test #'equal))))))
+      (goto-char 3)
+      (cl-letf (((symbol-function 'meow-ghostel--input-end) (lambda () 8))
+                ((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (meow-ghostel-kill-word 2))
+      (should (= 5 (cl-count "backspace" keys-sent :test #'equal)))
+      (should (equal "hello" (car kill-ring))))))
+
+(ert-deftest meow-ghostel-test-thing-kills-fall-through-outside-semi-char ()
+  "Outside semi-char every thing-kill remap defers to its vanilla command."
+  (meow-ghostel-test--with-input-fixture "$ " "hello world"
+    (setq-local ghostel--input-mode 'copy)
+    (dolist (pair '((meow-ghostel-kill-word . meow-kill-word)
+                    (meow-ghostel-backward-kill-word . meow-backward-kill-word)
+                    (meow-ghostel-kill-symbol . meow-kill-symbol)
+                    (meow-ghostel-backward-kill-symbol
+                     . meow-backward-kill-symbol)))
+      (let ((called nil))
+        (cl-letf (((symbol-function (cdr pair))
+                   (lambda (&rest _) (interactive "p") (setq called t))))
+          (funcall (car pair) 1))
+        (should called)))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: change commands
@@ -1513,7 +1674,8 @@ against a real libghostty terminal."
       (ghostel--write-vt term "tail")
       (meow-mode 1)
       (meow-ghostel-mode 1)
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
         (ghostel--redraw term t))
       (let* ((tpos ghostel--cursor-pos)
              (trow (cdr tpos))
@@ -1541,7 +1703,8 @@ against a real libghostty terminal."
       (switch-to-buffer (current-buffer))
       (goto-char (point-min))
       (move-to-column 3)
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
         (ghostel--redraw term t))
       (should (= 3 (current-column)))
       (should (= 1 (line-number-at-pos))))))
@@ -1552,7 +1715,8 @@ against a real libghostty terminal."
     (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
       (meow--switch-state 'insert))
     (goto-char (point-min))
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       (ghostel--redraw term t))
     (should (= 11 (current-column)))))
 
@@ -1561,7 +1725,8 @@ against a real libghostty terminal."
 and passes the module's completed-rendering result through."
   (meow-ghostel-test--with-buffer 5 40 "hello world"
     (meow--switch-state 'normal)
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       (should (ghostel--redraw term t t)))))
 
 ;; -----------------------------------------------------------------------

@@ -35,8 +35,9 @@
 ;; `ghostel-previous-prompt' / `ghostel-next-prompt' yourself if you
 ;; want prompt navigation.
 ;;
-;; BEACON state is unsupported in ghostel buffers (its commands edit the
-;; buffer directly and hit the read-only guard).
+;; BEACON state is unsupported in ghostel buffers: its commands edit the
+;; buffer directly, but the terminal render owns that text, so the edits
+;; reach the shell at the terminal cursor rather than at each beacon.
 ;;
 ;; Enable by adding to your init:
 ;;
@@ -47,6 +48,7 @@
 ;;; Code:
 
 (require 'subr-x)
+(require 'thingatpt)
 (require 'meow)
 (require 'ghostel)
 
@@ -472,11 +474,10 @@ Installed as the buffer-local `meow--kbd-back-to-indentation' target."
     (meow--switch-state 'insert)
     (setq-local meow--insert-pos (point))))
 
-(defun meow-ghostel-open-below ()
-  "Enter insert state at the end of input.
-Never runs vanilla `meow-open-below' in semi-char: its RET keyboard
-macro would execute the current command line."
-  (interactive)
+(defun meow-ghostel--open-below (fallback)
+  "Enter insert state at the end of input; elsewhere run FALLBACK.
+Never runs the vanilla command in semi-char: its RET keyboard macro
+resolves through ghostel's map to the PTY, executing the command line."
   (cond
    ((and (meow-ghostel--active-p) (not meow--temp-normal))
     (meow--cancel-selection)
@@ -488,13 +489,24 @@ macro would execute the current command line."
     (goto-char (marker-position ghostel--line-input-end))
     (meow--switch-state 'insert)
     (setq-local meow--insert-pos (point)))
-   (t (call-interactively #'meow-open-below))))
+   (t (call-interactively fallback))))
 
-(defun meow-ghostel-open-above ()
-  "Enter insert state at the start of input.
-Never runs vanilla `meow-open-above' in semi-char: `newline' would
-signal on the read-only buffer."
+(defun meow-ghostel-open-below ()
+  "Enter insert state at the end of input."
   (interactive)
+  (meow-ghostel--open-below #'meow-open-below))
+
+(defun meow-ghostel-open-below-visual ()
+  "Enter insert state at the end of input.
+The visual variant needs its own entry: it reaches the RET keyboard
+macro directly rather than through `meow-open-below'."
+  (interactive)
+  (meow-ghostel--open-below #'meow-open-below-visual))
+
+(defun meow-ghostel--open-above (fallback)
+  "Enter insert state at the start of input; elsewhere run FALLBACK.
+Never runs the vanilla command in semi-char: its `newline' lands in the
+render, which ghostel forwards to the shell as a stray continuation line."
   (cond
    ((and (meow-ghostel--active-p) (not meow--temp-normal))
     (meow--cancel-selection)
@@ -506,7 +518,19 @@ signal on the read-only buffer."
     (goto-char (marker-position ghostel--line-input-start))
     (meow--switch-state 'insert)
     (setq-local meow--insert-pos (point)))
-   (t (call-interactively #'meow-open-above))))
+   (t (call-interactively fallback))))
+
+(defun meow-ghostel-open-above ()
+  "Enter insert state at the start of input."
+  (interactive)
+  (meow-ghostel--open-above #'meow-open-above))
+
+(defun meow-ghostel-open-above-visual ()
+  "Enter insert state at the start of input.
+The visual variant needs its own entry: it reaches `newline' directly
+rather than through `meow-open-above'."
+  (interactive)
+  (meow-ghostel--open-above #'meow-open-above-visual))
 
 
 ;; Kill / Delete
@@ -601,6 +625,58 @@ exits the shell."
     (when (meow-ghostel-goto-input-position (point))
       (ghostel--send-encoded "backspace" "")
       (meow-ghostel--sync-render))))
+
+;; Thing kills.  `meow-kill-thing' reaches `meow--delete-region' only from
+;; the read-only handler of its primary `kill-region'.  In semi-char with a
+;; live process ghostel holds `inhibit-read-only' non-nil (that is what lets
+;; it forward programmatic inserts to the PTY), so that `kill-region'
+;; succeeds against the render and the handler never runs — the kill would
+;; land on the kill ring while the shell's line stayed untouched.  Remap the
+;; four wrapper commands instead.  The backward pair need their own entries:
+;; they reach the forward pair by plain funcall, which no remap intercepts.
+
+(defun meow-ghostel--kill-thing (thing arg)
+  "Kill ARG THINGs from point through the terminal; ARG may be negative.
+The range is clamped to the current input; the killed text still lands
+on the kill ring.  Semi-char only."
+  (let* ((origin (point))
+         (target (save-excursion (forward-thing thing arg) (point)))
+         (clamped (meow-ghostel--clamp (min origin target) (max origin target)))
+         (beg (car clamped))
+         (end (cdr clamped))
+         (text (ghostel--filter-soft-wraps (filter-buffer-substring beg end))))
+    (unless (string-empty-p text)
+      (let ((select-enable-clipboard meow-use-clipboard))
+        (kill-new text)))
+    (meow-ghostel-delete-input-region beg end)))
+
+(defun meow-ghostel-kill-word (arg)
+  "Kill ARG `meow-word-thing's forward through the terminal."
+  (interactive "p")
+  (if (not (meow-ghostel--active-p))
+      (call-interactively #'meow-kill-word)
+    (meow-ghostel--kill-thing meow-word-thing arg)))
+
+(defun meow-ghostel-backward-kill-word (arg)
+  "Kill ARG `meow-word-thing's backward through the terminal."
+  (interactive "p")
+  (if (not (meow-ghostel--active-p))
+      (call-interactively #'meow-backward-kill-word)
+    (meow-ghostel--kill-thing meow-word-thing (- arg))))
+
+(defun meow-ghostel-kill-symbol (arg)
+  "Kill ARG `meow-symbol-thing's forward through the terminal."
+  (interactive "p")
+  (if (not (meow-ghostel--active-p))
+      (call-interactively #'meow-kill-symbol)
+    (meow-ghostel--kill-thing meow-symbol-thing arg)))
+
+(defun meow-ghostel-backward-kill-symbol (arg)
+  "Kill ARG `meow-symbol-thing's backward through the terminal."
+  (interactive "p")
+  (if (not (meow-ghostel--active-p))
+      (call-interactively #'meow-backward-kill-symbol)
+    (meow-ghostel--kill-thing meow-symbol-thing (- arg))))
 
 
 ;; Change
@@ -708,10 +784,11 @@ swapped out the way `yank-pop' edits a buffer."
 
 
 ;; Buffer-edit indirection: `meow--delete-region' / `meow--insert' route
-;; through these buffer-local function variables.  They carry the
-;; commands not covered by remaps — notably `meow-kill-thing' (and its
-;; word/symbol wrappers), whose `kill-region' signals on the read-only
-;; buffer and falls back to `meow--delete-region'.
+;; through these buffer-local function variables.  They carry the commands
+;; not covered by remaps — `meow-swap-grab' and `meow-sync-grab', which
+;; write through `meow--second-sel-set-string'.  Commands gated on
+;; `meow--allow-modify-p' never reach them: it tests `buffer-read-only',
+;; which stays non-nil in a ghostel buffer.
 
 (defun meow-ghostel--delete-region (start end)
   "Delete START..END, PTY-routed in semi-char.
@@ -831,10 +908,20 @@ of the synthetic event that `meow-ghostel-mode-map' binds to COMMAND.")
     (define-key map [remap meow-insert]          #'meow-ghostel-insert)
     (define-key map [remap meow-append]          #'meow-ghostel-append)
     (define-key map [remap meow-open-below]      #'meow-ghostel-open-below)
+    (define-key map [remap meow-open-below-visual]
+                #'meow-ghostel-open-below-visual)
     (define-key map [remap meow-open-above]      #'meow-ghostel-open-above)
+    (define-key map [remap meow-open-above-visual]
+                #'meow-ghostel-open-above-visual)
     (define-key map [remap meow-kill]            #'meow-ghostel-kill)
     (define-key map [remap meow-kill-append]     #'meow-ghostel-kill-append)
     (define-key map [remap meow-kill-whole-line] #'meow-ghostel-kill-whole-line)
+    (define-key map [remap meow-kill-word]       #'meow-ghostel-kill-word)
+    (define-key map [remap meow-kill-symbol]     #'meow-ghostel-kill-symbol)
+    (define-key map [remap meow-backward-kill-word]
+                #'meow-ghostel-backward-kill-word)
+    (define-key map [remap meow-backward-kill-symbol]
+                #'meow-ghostel-backward-kill-symbol)
     (define-key map [remap meow-C-k]             #'meow-ghostel-C-k)
     (define-key map [remap meow-C-d]             #'meow-ghostel-C-d)
     (define-key map [remap meow-backspace]       #'meow-ghostel-backspace)

@@ -28,8 +28,8 @@ output — so the shell/REPL itself proves the edit landed.
   `ghostel-keymap-exceptions` (Emacs `universal-argument`, not shell kill-line) —
   the passthrough group uses `C-a` + `C-k` instead.
   The `S`/`C`/`V`/`T` groups cover the thing kills, whose PTY routing rests entirely
-  on the remaps: their `kill-region` succeeds against the render (ghostel holds
-  `inhibit-read-only` non-nil on a live terminal), so `meow-kill-thing`'s read-only
+  on the remaps: their `kill-region` succeeds against the render (ghostel clears
+  `buffer-read-only` on a live terminal), so `meow-kill-thing`'s read-only
   fallback never runs and an unremapped kill leaves the shell's line untouched.
   `M`/`N` cover the visual opens — `M` fails loudly if `meow-open-below-visual`
   reaches ghostel's RET sender, which executes the command line as typed.

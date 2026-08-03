@@ -41,12 +41,15 @@ pipe process is live without spawning anything.  Callers must
 
 (defun meow-ghostel-test--go-live (proc)
   "Bind PROC as the buffer's terminal process and sync the read-only state.
-A live process in a terminal-input mode is what makes ghostel hold
-`inhibit-read-only' non-nil, so fixtures must set it to reproduce the
-buffer state meow commands actually run against."
+In a live terminal-input mode ghostel clears `buffer-read-only' (older
+releases instead held a buffer-local `inhibit-read-only'), so fixtures
+must sync it to reproduce the buffer state meow commands actually run
+against."
   (setq-local ghostel--process proc)
-  (when (fboundp 'ghostel--sync-inhibit-read-only)
-    (ghostel--sync-inhibit-read-only)))
+  (cond ((fboundp 'ghostel--sync-read-only)
+         (ghostel--sync-read-only))
+        ((fboundp 'ghostel--sync-inhibit-read-only)
+         (ghostel--sync-inhibit-read-only))))
 
 (defmacro meow-ghostel-test--with-buffer (rows cols text &rest body)
   "Create a ghostel buffer with ROWS x COLS, feed TEXT, render, then run BODY.
@@ -78,7 +81,10 @@ without it the test is skipped (e.g. CI's elisp-only `test-meow' job)."
 
 (defmacro meow-ghostel-test--with-meow-buffer (&rest body)
   "Set up a ghostel buffer with meow active (no native module).
-Uses mocks for native functions."
+The buffer carries a fake term handle and a live pipe process so the
+guard predicates and the read-only sync see a live main-screen
+terminal; `ghostel--alt-screen-p' is stubbed to nil around BODY (tests
+rebind it for alt-screen cases)."
   (declare (indent 0) (debug t))
   `(with-temp-buffer
      (ghostel-mode)
@@ -88,11 +94,24 @@ Uses mocks for native functions."
      ;; `insert's — the scrollback-offset computation then collapses to
      ;; zero.
      (setq-local ghostel--term-rows 100)
-     (meow-mode 1)
-     (meow-ghostel-mode 1)
-     (cl-macrolet ((insert (&rest args)
-                     `(meow-ghostel-test--insert ,@args)))
-       ,@body)))
+     ;; A term handle must exist before the read-only sync below:
+     ;; `ghostel--sync-read-only' reads it, and syncing without one
+     ;; reproduces the dead-terminal barrier instead of the live
+     ;; writable render.  Tests may still override it in BODY.
+     (setq-local ghostel--term 'fake)
+     (let ((proc (meow-ghostel-test--live-process)))
+       (unwind-protect
+           ;; The fake handle must never reach the native predicate
+           ;; (`wrong-type-argument user-ptrp' with the module loaded).
+           (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                      (lambda (&rest _) nil)))
+             (meow-ghostel-test--go-live proc)
+             (meow-mode 1)
+             (meow-ghostel-mode 1)
+             (cl-macrolet ((insert (&rest args)
+                             `(meow-ghostel-test--insert ,@args)))
+               ,@body))
+         (delete-process proc)))))
 
 (defmacro meow-ghostel-test--with-input-fixture (prompt input &rest body)
   "Set up a mock terminal buffer with PROMPT (carrying `ghostel-prompt')
@@ -119,7 +138,7 @@ derive prompt boundaries and viewport rows without a native module."
            (meow-mode 1)
            (meow-ghostel-mode 1)
            (meow--switch-state 'normal)
-           (cl-letf (((symbol-function 'ghostel--mode-enabled)
+           (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
        (delete-process proc)
@@ -149,7 +168,7 @@ with the terminal mocked."
            (meow-mode 1)
            (meow-ghostel-mode 1)
            (meow--switch-state 'normal)
-           (cl-letf (((symbol-function 'ghostel--mode-enabled)
+           (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
        (delete-process proc)
@@ -167,17 +186,17 @@ become `ghostel--line-input-start' / `--line-input-end'."
     (insert ,input-text)
     (setq-local ghostel--line-input-start (copy-marker ,input-start nil))
     (setq-local ghostel--line-input-end (copy-marker ,input-end t))
-    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
       ,@body)))
 
 (defmacro meow-ghostel-test--with-escape-stubs (alt-screen-p &rest body)
-  "Run BODY with `ghostel--mode-enabled' returning ALT-SCREEN-P for 1049
+  "Run BODY with `ghostel--alt-screen-p' returning ALT-SCREEN-P
 and with `ghostel--send-encoded' captured into the local list `sent'."
   (declare (indent 1) (debug t))
   `(let ((sent '()))
      (ignore sent)
-     (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                (lambda (_term mode) (and (= mode 1049) ,alt-screen-p)))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                (lambda (_term) ,alt-screen-p))
                ((symbol-function 'ghostel--anchor-window) #'ignore)
                ((symbol-function 'ghostel--send-encoded)
                 (lambda (key mods &rest _) (push (cons key mods) sent))))
@@ -190,14 +209,18 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
 
 (ert-deftest meow-ghostel-test-fixture-reproduces-live-terminal ()
   "The terminal fixtures reproduce the buffer state of a live shell.
-Ghostel holds `inhibit-read-only' non-nil there, which is what lets
-meow's editing commands edit the render; without it the PTY-routing
-tests below would pass against the old read-only barrier instead."
-  (skip-unless (fboundp 'ghostel--sync-inhibit-read-only))
+Ghostel clears `buffer-read-only' there (foreign edits are intercepted
+and forwarded to the PTY), which is what lets meow's editing commands
+edit the render; without it the PTY-routing tests below would pass
+against the read-only barrier instead."
+  (skip-unless (fboundp 'ghostel--sync-read-only))
   (meow-ghostel-test--with-input-fixture "$ " "hello"
     (should (process-live-p ghostel--process))
-    (should buffer-read-only)
-    (should inhibit-read-only)))
+    (should-not buffer-read-only))
+  (meow-ghostel-test--with-meow-buffer
+   (should (process-live-p ghostel--process))
+   (should-not buffer-read-only)
+   (should (meow-ghostel--active-p))))
 
 (ert-deftest meow-ghostel-test-mode-activation ()
   "`meow-ghostel-mode' wires hooks, advice, remaps, and buffer-locals.
@@ -388,7 +411,7 @@ remaps in our ordinary minor-mode map still apply at dispatch time."
    (setq-local ghostel--cursor-char-pos 12)
    (meow--switch-state 'normal)
    (goto-char 3)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (meow-ghostel--around-redraw #'ignore 'fake))
    (should (= 3 (point)))))
 
@@ -400,7 +423,7 @@ The temp buffer has no window, which counts as anchored/following."
    (setq-local ghostel--term 'fake)
    (setq-local ghostel--cursor-pos '(11 . 0))
    (setq-local ghostel--cursor-char-pos 12)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
      (meow--switch-state 'insert)
      (goto-char (point-min))
@@ -420,7 +443,7 @@ and the repaint's `deactivate-mark' is suppressed."
    (push-mark 2 t t)
    (should (region-active-p))
    (setq deactivate-mark nil)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (meow-ghostel--around-redraw
       ;; Simulate a repaint that clobbers the mark marker and requests
       ;; mark deactivation, as buffer edits do.
@@ -433,13 +456,13 @@ and the repaint's `deactivate-mark' is suppressed."
    (should (region-active-p))))
 
 (ert-deftest meow-ghostel-test-around-redraw-bypassed-in-alt-screen ()
-  "In alt-screen (DECSET 1049) the advice defers entirely to the original."
+  "In alt-screen the advice defers entirely to the original."
   (meow-ghostel-test--with-meow-buffer
    (insert "hello world")
    (setq-local ghostel--term 'fake)
    (setq-local ghostel--cursor-pos '(11 . 0))
    (setq-local ghostel--cursor-char-pos 12)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) t))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) t))
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
      (meow--switch-state 'insert)
      (goto-char (point-min))
@@ -459,7 +482,7 @@ while the user reads scrollback."
    (setq-local ghostel--term 'fake)
    (setq-local ghostel--cursor-pos '(11 . 0))
    (setq-local ghostel--cursor-char-pos 12)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore)
              ((symbol-function 'get-buffer-window) (lambda (&rest _) 'fake-win))
              ((symbol-function 'ghostel--window-anchored-p) (lambda (_) nil)))
@@ -478,7 +501,7 @@ pending-redraw flags."
    (setq-local ghostel--cursor-pos '(11 . 0))
    (setq-local ghostel--cursor-char-pos 12)
    (meow--switch-state 'normal)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (let (received)
        (should (eq 'rendered
                    (meow-ghostel--around-redraw
@@ -494,7 +517,7 @@ returns the original's value."
    (setq-local ghostel--term 'fake)
    (setq-local ghostel--cursor-pos '(11 . 0))
    (setq-local ghostel--cursor-char-pos 12)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) t)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) t)))
      (let (received)
        (should (eq 'rendered
                    (meow-ghostel--around-redraw
@@ -513,7 +536,7 @@ returns the original's value."
    (setq-local ghostel--term 'fake)
    (setq-local ghostel--cursor-char-pos 12)
    (setq-local ghostel--cursor-pos '(11 . 0))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
      (meow--switch-state 'normal)
      (goto-char 3)
@@ -857,7 +880,7 @@ PTY cursor."
    (setq-local ghostel--cursor-pos '(4 . 0))
    (setq-local ghostel--cursor-char-pos 5)
    (meow--switch-state 'normal)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'meow-ghostel-goto-input-position)
               (lambda (pos &rest _) (goto-char pos) t))
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
@@ -958,7 +981,7 @@ Driving the cursor across rows would be read as history navigation."
    (setq-local ghostel--cursor-pos '(8 . 1))
    (setq-local ghostel--cursor-char-pos (point-max))
    (meow--switch-state 'normal)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (goto-char (point-min))           ; row 0, cursor is on row 1
      (let ((arrows '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1089,8 +1112,8 @@ Sends arrows first when point is off the cursor, then a delete."
 
 (ert-deftest meow-ghostel-test-kill-word-remapped ()
   "`meow-kill-word' is remapped so the kill reaches the PTY.
-Vanilla `meow-kill-word' would kill the render instead: ghostel holds
-`inhibit-read-only' non-nil on a live terminal, so the `kill-region' in
+Vanilla `meow-kill-word' would kill the render instead: ghostel clears
+`buffer-read-only' on a live terminal, so the `kill-region' in
 `meow-kill-thing' succeeds and never reaches `meow--delete-region'."
   (meow-ghostel-test--with-input-fixture "$ " "hello world"
     (should (eq #'meow-ghostel-kill-word (command-remapping 'meow-kill-word)))
@@ -1299,6 +1322,25 @@ the terminal cursor regardless of point."
   (meow-ghostel-test--with-input-fixture "$ " "hello"
     (should-error (meow-ghostel-yank-pop) :type 'user-error)))
 
+(ert-deftest meow-ghostel-test-comment-signals-user-error ()
+  "`meow-ghostel-comment' signals a `user-error' in semi-char.
+Unremapped, `meow-comment' passes `meow--allow-modify-p' (the live
+render is writable) and its M-; keyboard macro resolves through
+ghostel's semi-char map to a PTY sender, typing bytes into the shell."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (should (eq #'meow-ghostel-comment (command-remapping 'meow-comment)))
+    (should-error (meow-ghostel-comment) :type 'user-error)))
+
+(ert-deftest meow-ghostel-test-comment-falls-through-outside-semi-char ()
+  "Outside semi-char the comment remap defers to `meow-comment'."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (setq-local ghostel--input-mode 'copy)
+    (let ((called nil))
+      (cl-letf (((symbol-function 'meow-comment)
+                 (lambda (&rest _) (interactive) (setq called t))))
+        (meow-ghostel-comment))
+      (should called))))
+
 (ert-deftest meow-ghostel-test-undo-sends-ctrl-underscore ()
   "`meow-ghostel-undo' sends Ctrl+_ and cancels the selection."
   (meow-ghostel-test--with-input-fixture "$ " "hello"
@@ -1325,7 +1367,7 @@ Without the override C-n resolves to a PTY sender = shell history."
    (setq-local ghostel--cursor-pos '(0 . 2))
    (setq-local ghostel--cursor-char-pos (1- (point-max)))
    (meow--switch-state 'normal)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (goto-char (point-min))
      (let ((sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1343,7 +1385,7 @@ Without the override C-n resolves to a PTY sender = shell history."
    (setq-local ghostel--cursor-pos '(0 . 1)) ; cursor on line-two
    (setq-local ghostel--cursor-char-pos 10)
    (meow--switch-state 'normal)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (goto-char (point-min))
      (meow-next nil)
      (should (= 2 (line-number-at-pos)))
@@ -1486,21 +1528,29 @@ so line mode's own keymap cannot misroute it."
       (should (equal " world" (buffer-string))))))
 
 (ert-deftest meow-ghostel-test-active-p-guards ()
-  "`meow-ghostel--active-p' requires semi-char and no alt-screen."
+  "`meow-ghostel--active-p' requires semi-char, a live process, no alt-screen."
   (meow-ghostel-test--with-meow-buffer
    (setq-local ghostel--term 'fake)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (should (meow-ghostel--active-p))
      (let ((ghostel--input-mode 'copy))
        (should-not (meow-ghostel--active-p)))
      (let ((ghostel--input-mode 'char))
-       (should-not (meow-ghostel--active-p))))
+       (should-not (meow-ghostel--active-p)))
+     ;; No process, or an exited one: inactive, keys must not be
+     ;; encoded to the closed channel (evil-ghostel's #555).
+     (let ((ghostel--process nil))
+       (should-not (meow-ghostel--active-p)))
+     (let ((dead (meow-ghostel-test--live-process)))
+       (delete-process dead)
+       (let ((ghostel--process dead))
+         (should-not (meow-ghostel--active-p)))))
    ;; Alt-screen: inactive even in semi-char.
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) t)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) t)))
      (should-not (meow-ghostel--active-p)))
    ;; No terminal handle: inactive.
    (setq-local ghostel--term nil)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (should-not (meow-ghostel--active-p)))))
 
 ;; -----------------------------------------------------------------------
@@ -1514,7 +1564,7 @@ so line mode's own keymap cannot misroute it."
    (let ((blink-stopped nil)
          (meow-updated nil)
          (orig-called nil))
-     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
                ((symbol-function 'ghostel--cursor-blink-stop)
                 (lambda () (setq blink-stopped t)))
                ((symbol-function 'meow--update-cursor)
@@ -1526,7 +1576,7 @@ so line mode's own keymap cannot misroute it."
        (should-not orig-called))
      ;; Alt-screen: defer to the terminal's style.
      (setq blink-stopped nil meow-updated nil orig-called nil)
-     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) t)))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) t)))
        (meow-ghostel--override-cursor-style
         (lambda () (setq orig-called t)))
        (should orig-called)

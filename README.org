@@ -69,7 +69,9 @@ remaps the =meow-*= commands (never literal keys), so any layout works.
 Not supported: BEACON state (its commands edit the buffer directly, but the
 terminal render owns that text, so the edits reach the shell at the terminal
 cursor rather than at each beacon), =meow-yank-pop= (a terminal echo cannot
-be swapped out; it signals a =user-error=), and redo.  Bind
+be swapped out; it signals a =user-error=), =meow-comment= (likewise a
+=user-error=; its =M-;= keyboard macro would type bytes into the shell), and
+redo.  Bind
 =ghostel-previous-prompt= / =ghostel-next-prompt= in your =meow-setup= if you
 want prompt navigation.
 

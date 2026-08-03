@@ -5,7 +5,7 @@
 ;; Author: Daniel Kraus <daniel@kraus.my>
 ;; URL: https://github.com/dakra/meow-ghostel
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.40.0"))
+;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.49.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -52,7 +52,7 @@
 (require 'meow)
 (require 'ghostel)
 
-(declare-function ghostel--mode-enabled "ghostel-module")
+(declare-function ghostel--alt-screen-p "ghostel-module")
 
 (defvar meow-ghostel-mode)
 
@@ -80,8 +80,8 @@ change immediately through `meow-mode-state-list'.  This option owns the
 (defcustom meow-ghostel-escape 'auto
   "Where insert-state ESC is routed in ghostel buffers.
 
-`auto'     - to the terminal in alt-screen mode (DECSET 1049: vim, less,
-             htop, …); otherwise meow's binding switches to normal state.
+`auto'     - to the terminal in alt-screen mode (vim, less, htop, …);
+             otherwise meow's binding switches to normal state.
 `terminal' - always send ESC to the terminal.
 `meow'     - always run meow's binding.
 
@@ -105,12 +105,15 @@ Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
 
 (defun meow-ghostel--active-p ()
   "Return non-nil when meow-ghostel PTY routing should intercept.
-True in `semi-char' input mode and outside alt-screen — the only state in
-which `meow-ghostel-*' commands send PTY keys rather than running `meow-*'."
+True in `semi-char' input mode with a live process and outside alt-screen —
+the only state in which `meow-ghostel-*' commands send PTY keys rather than
+running `meow-*'.  Once the shell exits, keys must not be encoded to the
+closed channel, so every command falls back to vanilla meow."
   (and meow-ghostel-mode
        ghostel--term
-       (not (ghostel--mode-enabled ghostel--term 1049))
-       (eq ghostel--input-mode 'semi-char)))
+       ghostel--process (process-live-p ghostel--process)
+       (eq ghostel--input-mode 'semi-char)
+       (not (ghostel-alt-screen-p))))
 
 (defun meow-ghostel--line-mode-active-p ()
   "Return non-nil when line mode editing is in effect.
@@ -152,9 +155,9 @@ Comparable to `ghostel--cursor-pos''s row."
   "Apply meow point/selection handling around `ghostel--redraw'.
 ORIG-FN is the advised function, called with TERM and ARGS (FULL, and
 FORCE-SYNC on ghostel 0.44+); its value is returned so callers can see
-whether rendering completed.  Skipped in alt-screen (1049)."
+whether rendering completed.  Skipped in alt-screen."
   (if (and meow-ghostel-mode
-           (not (ghostel--mode-enabled term 1049)))
+           (not (ghostel--alt-screen-p term)))
       (let* ((region-p (region-active-p))
              (saved-mark (and region-p (mark t)))
              result)
@@ -192,7 +195,7 @@ insert state with point off the cursor, unless FORCE."
 ORIG-FN is the advised setter (STYLE, VISIBLE); deferred to in alt-screen."
   (if (and meow-ghostel-mode
            ghostel--term
-           (not (ghostel--mode-enabled ghostel--term 1049)))
+           (not (ghostel-alt-screen-p)))
       ;; Meow owns the cursor now; end any terminal-driven blink that a
       ;; full-screen app left running before we exited the alt-screen.
       (progn (ghostel--cursor-blink-stop)
@@ -310,8 +313,10 @@ last word) can't over-delete past the live input.  END is never below BEG."
 (defun meow-ghostel--sync-render ()
   "Drain pending PTY output so cursor state reflects the latest echo.
 Loops `accept-process-output' (capped by
-`meow-ghostel-sync-render-max-iterations'), then flushes any deferred redraw."
-  (when (and ghostel--process (process-live-p ghostel--process))
+`meow-ghostel-sync-render-max-iterations'), then flushes any deferred redraw.
+No liveness check: it would race process death, and draining a dead
+process is already a no-op."
+  (when ghostel--process
     (let ((iter 0))
       (while (and (< iter meow-ghostel-sync-render-max-iterations)
                   (accept-process-output ghostel--process 0.05 nil t))
@@ -628,8 +633,8 @@ exits the shell."
 
 ;; Thing kills.  `meow-kill-thing' reaches `meow--delete-region' only from
 ;; the read-only handler of its primary `kill-region'.  In semi-char with a
-;; live process ghostel holds `inhibit-read-only' non-nil (that is what lets
-;; it forward programmatic inserts to the PTY), so that `kill-region'
+;; live process ghostel clears `buffer-read-only' (foreign edits are
+;; intercepted and forwarded to the PTY instead), so that `kill-region'
 ;; succeeds against the render and the handler never runs — the kill would
 ;; land on the kill ring while the shell's line stayed untouched.  Remap the
 ;; four wrapper commands instead.  The backward pair need their own entries:
@@ -770,6 +775,20 @@ swapped out the way `yank-pop' edits a buffer."
       (call-interactively #'meow-yank-pop)
     (user-error "Yank-pop not supported in terminal; kill and paste instead")))
 
+
+;; Comment
+
+(defun meow-ghostel-comment ()
+  "Signal that commenting is unsupported on live terminal input.
+The vanilla command's M-; keyboard macro resolves through ghostel's
+semi-char map to a PTY sender and would type bytes into the shell
+\(the render buffer is writable there, so `meow--allow-modify-p'
+does not stop `meow-comment')."
+  (interactive)
+  (if (not (meow-ghostel--active-p))
+      (call-interactively #'meow-comment)
+    (user-error "Comment not supported on live terminal input")))
+
 
 ;; Undo
 
@@ -785,10 +804,11 @@ swapped out the way `yank-pop' edits a buffer."
 
 ;; Buffer-edit indirection: `meow--delete-region' / `meow--insert' route
 ;; through these buffer-local function variables.  They carry the commands
-;; not covered by remaps — `meow-swap-grab' and `meow-sync-grab', which
-;; write through `meow--second-sel-set-string'.  Commands gated on
-;; `meow--allow-modify-p' never reach them: it tests `buffer-read-only',
-;; which stays non-nil in a ghostel buffer.
+;; not covered by remaps: `meow-swap-grab' and `meow-sync-grab' (via
+;; `meow--second-sel-set-string'), and `meow-replace-save' /
+;; `meow-replace-pop' — their `meow--allow-modify-p' gate passes in live
+;; semi-char, where ghostel clears `buffer-read-only' to intercept
+;; foreign edits.
 
 (defun meow-ghostel--delete-region (start end)
   "Delete START..END, PTY-routed in semi-char.
@@ -828,8 +848,7 @@ Terminal-bound ESC runs through `ghostel--on-user-input'; otherwise
   (let* ((mode meow-ghostel--escape-mode)
          (to-terminal (or (eq mode 'terminal)
                           (and (eq mode 'auto)
-                               ghostel--term
-                               (ghostel--mode-enabled ghostel--term 1049)))))
+                               (ghostel-alt-screen-p)))))
     (if to-terminal
         (progn
           (ghostel--on-user-input)
@@ -939,6 +958,7 @@ of the synthetic event that `meow-ghostel-mode-map' binds to COMMAND.")
     (define-key map [remap meow-replace-char]    #'meow-ghostel-replace-char)
     (define-key map [remap meow-yank]            #'meow-ghostel-yank)
     (define-key map [remap meow-yank-pop]        #'meow-ghostel-yank-pop)
+    (define-key map [remap meow-comment]         #'meow-ghostel-comment)
     (define-key map [remap meow-undo]            #'meow-ghostel-undo)
     (define-key map [remap meow-insert-exit]     #'meow-ghostel-escape)
     map)

@@ -459,6 +459,106 @@
       "timeout": 8.0
     },
     {
+      "group": "b-b-b-c-path",
+      "comment": "word boundaries: each b lands on the previous path component, w c changes exactly that component"
+    },
+    {
+      "type": "{{echo}} a/BAD/c.txt"
+    },
+    {
+      "keys": "<escape> b b b w c"
+    },
+    {
+      "type": "m27ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^a/m27ok/c.txt$",
+      "timeout": 8.0
+    },
+    {
+      "group": "b-s-path",
+      "comment": "b s kills only the last path component"
+    },
+    {
+      "type": "{{echo}} m28ok/DELME"
+    },
+    {
+      "keys": "<escape> b s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m28ok/$",
+      "timeout": 8.0
+    },
+    {
+      "group": "B-c-path",
+      "comment": "symbol motion spans the whole path: B c changes all of it"
+    },
+    {
+      "type": "{{echo}} BAD/BAD.BAD"
+    },
+    {
+      "keys": "<escape> B c"
+    },
+    {
+      "type": "m29ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m29ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "opt-out",
+      "comment": "meow-ghostel-word-boundaries nil (live :set) restores ghostel's table: b c takes the whole path; reset to the standard value afterwards"
+    },
+    {
+      "eval": "(customize-set-variable 'meow-ghostel-word-boundaries nil)"
+    },
+    {
+      "assert": {
+        "eval": "(eq (syntax-table) ghostel-mode-syntax-table)"
+      }
+    },
+    {
+      "type": "{{echo}} keep BAD/BAD.BAD"
+    },
+    {
+      "keys": "<escape> b c"
+    },
+    {
+      "type": "m30ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^keep m30ok$",
+      "timeout": 8.0
+    },
+    {
+      "eval": "(custom-reevaluate-setting 'meow-ghostel-word-boundaries)"
+    },
+    {
+      "assert": {
+        "eval": "(eq (syntax-table) meow-ghostel-syntax-table)"
+      }
+    },
+    {
       "group": "u",
       "comment": "D then u -- undo restores the deleted char"
     },

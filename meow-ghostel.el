@@ -100,6 +100,43 @@ Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
 (setf (alist-get 'ghostel-mode meow-mode-state-list)
       meow-ghostel-initial-state)
 
+(defvar meow-ghostel-syntax-table (make-syntax-table ghostel-mode-syntax-table)
+  "Syntax table installed by `meow-ghostel-mode'.
+`meow-ghostel-word-boundaries' is realized into it on install.")
+
+(defcustom meow-ghostel-word-boundaries "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
+  "Characters that end words but join symbols in ghostel buffers.
+
+The default matches Vim's iskeyword: letters, digits, and underscore are
+word constituents, so `w', `b', `e', and `meow-mark-word' stop at path
+components (`bar' in `~/src/foo/bar.txt').  The boundaries get symbol
+syntax, so the symbol commands (\"W\", \"B\", \"E\", `meow-mark-symbol',
+the \"e\" thing) span the whole path.
+
+The table drives every syntax-based word command, not only meow's: while
+`meow-ghostel-mode' is on, double-click and line-mode `M-f' likewise see
+path components (`mouse-1-double-click-prefer-symbols', Emacs 30.1 and
+later, makes double-click select the whole path again).  Link clicking
+and `ghostel-find-file-at-point' are unaffected.
+
+nil keeps ghostel's path-aware `ghostel-mode-syntax-table'.  While a
+string is installed it takes precedence for printable ASCII, so
+`ghostel-word-boundary-string' only governs non-ASCII characters.
+
+The option is global (buffer-local values are ignored).  `setopt' or
+`customize-set-variable' applies a change to live buffers at once; a
+plain `setq' applies at the next mode enable."
+  :type '(choice (const :tag "Keep ghostel's path-aware boundaries" nil)
+                 (string :tag "Boundary characters"))
+  :initialize #'custom-initialize-default
+  :set (lambda (sym newval)
+         (set-default-toplevel-value sym newval)
+         (dolist (buf (buffer-list))
+           (when (buffer-local-value 'meow-ghostel-mode buf)
+             (with-current-buffer buf
+               (meow-ghostel--restore-word-boundaries)
+               (meow-ghostel--install-word-boundaries))))))
+
 
 ;; Guard predicates
 
@@ -967,6 +1004,40 @@ Contains only `[remap meow-*]' bindings and the synthetic events
 backing `meow-ghostel--kbd-overrides'; see the commentary.")
 
 
+;; Word boundaries
+
+(defvar-local meow-ghostel--saved-syntax-table nil
+  "Syntax table to restore when `meow-ghostel-mode' turns off.
+Non-nil only while `meow-ghostel-syntax-table' is installed in this buffer.")
+
+(defun meow-ghostel--realize-word-boundaries (boundaries)
+  "Realize BOUNDARIES into `meow-ghostel-syntax-table'.
+Boundaries get symbol syntax, so `forward-word' stops at them while
+`forward-symbol' spans them; paren or string syntax would make
+double-click call `forward-sexp'.  Whitespace keeps whitespace syntax."
+  (set-char-table-range meow-ghostel-syntax-table (cons 128 (max-char)) nil)
+  (modify-syntax-entry '(?! . ?~) "w" meow-ghostel-syntax-table)
+  (dolist (ch (string-to-list boundaries))
+    (unless (memq ch '(?\s ?\t ?\n ?\r ?\f ?\v))
+      (modify-syntax-entry ch "_" meow-ghostel-syntax-table))))
+
+(defun meow-ghostel--install-word-boundaries ()
+  "Realize and install `meow-ghostel-syntax-table' in the current buffer."
+  (let ((boundaries (default-value 'meow-ghostel-word-boundaries)))
+    (when (and (derived-mode-p 'ghostel-mode)
+               (stringp boundaries)
+               (not meow-ghostel--saved-syntax-table))
+      (meow-ghostel--realize-word-boundaries boundaries)
+      (setq meow-ghostel--saved-syntax-table (syntax-table))
+      (set-syntax-table meow-ghostel-syntax-table))))
+
+(defun meow-ghostel--restore-word-boundaries ()
+  "Restore the syntax table that was current before the meow table."
+  (when meow-ghostel--saved-syntax-table
+    (set-syntax-table meow-ghostel--saved-syntax-table)
+    (kill-local-variable 'meow-ghostel--saved-syntax-table)))
+
+
 ;; Minor mode
 
 (defun meow-ghostel--any-active-elsewhere-p (except-buffer)
@@ -996,6 +1067,7 @@ Enabling installs global advice while any buffer has the mode enabled."
         ;; buffer to copy mode before the PTY-aware commands can run.
         ;; Mouse selection stays governed by `ghostel-mouse-drag-input-mode'.
         (setq-local ghostel-mark-activation-input-mode nil)
+        (meow-ghostel--install-word-boundaries)
         (dolist (override meow-ghostel--kbd-overrides)
           (set (make-local-variable (car override))
                (format "<%s>" (meow-ghostel--kbd-event (car override)))))
@@ -1016,6 +1088,7 @@ Enabling installs global advice while any buffer has the mode enabled."
     (remove-hook 'ghostel-inhibit-anchor-functions
                  #'meow-ghostel--anchor-inhibit t)
     (kill-local-variable 'ghostel-mark-activation-input-mode)
+    (meow-ghostel--restore-word-boundaries)
     (dolist (override meow-ghostel--kbd-overrides)
       (kill-local-variable (car override)))
     (kill-local-variable 'meow--delete-region-function)

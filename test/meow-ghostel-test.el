@@ -319,6 +319,121 @@ mode before the PTY-aware commands can run."
    (meow-ghostel-mode -1)
    (should-not (local-variable-p 'ghostel-mark-activation-input-mode))))
 
+;; -----------------------------------------------------------------------
+;; Test: vim-style word boundaries
+;; -----------------------------------------------------------------------
+
+(ert-deftest meow-ghostel-test-word-motion-stops-at-path-components ()
+  "`forward-word' visits each path component instead of the whole path."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "cat ~/src/foo/bar.txt")
+   (goto-char (point-min))
+   (should (equal (cl-loop repeat 5 do (forward-thing 'word) collect (point))
+                  '(4 10 14 18 22)))))
+
+(ert-deftest meow-ghostel-test-symbol-spans-path ()
+  "The symbol thing covers the whole path while the word thing covers a component."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "cat ~/src/foo/bar.txt")
+   (goto-char (point-min))
+   (search-forward "bar")
+   (backward-char 1)
+   (let ((word (bounds-of-thing-at-point 'word))
+         (sym (bounds-of-thing-at-point 'symbol)))
+     (should (equal (buffer-substring (car word) (cdr word)) "bar"))
+     (should (equal (buffer-substring (car sym) (cdr sym))
+                    "~/src/foo/bar.txt")))
+   (goto-char (point-min))
+   (forward-thing 'symbol 2)
+   (should (= (point) 22))))
+
+(ert-deftest meow-ghostel-test-underscore-joins-words ()
+  "Underscore is a word constituent, as in Vim's iskeyword."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "foo_bar baz")
+   (goto-char 3)
+   (let ((bounds (bounds-of-thing-at-point 'word)))
+     (should (equal (buffer-substring (car bounds) (cdr bounds)) "foo_bar")))))
+
+(ert-deftest meow-ghostel-test-word-boundary-table-shape ()
+  "Boundaries get symbol syntax; every printable ASCII char is word or symbol."
+  (meow-ghostel-test--with-meow-buffer
+   (dolist (ch '(?/ ?. ?$ ?% ?\( ?\"))
+     (should (eq (char-syntax ch) ?_)))
+   (should (eq (char-syntax ?_) ?w))
+   (should (eq (char-syntax ?a) ?w))
+   (should (eq (char-syntax ?\s) ?\s))
+   (with-syntax-table meow-ghostel-syntax-table
+     (cl-loop for ch from ?! to ?~
+              do (should (memq (char-syntax ch) '(?w ?_)))))))
+
+(ert-deftest meow-ghostel-test-word-boundaries-install-restore ()
+  "Enable installs the meow table, disable restores the previous one exactly."
+  (meow-ghostel-test--with-meow-buffer
+   (should (eq (syntax-table) meow-ghostel-syntax-table))
+   (should (local-variable-p 'meow-ghostel--saved-syntax-table))
+   (meow-ghostel-mode -1)
+   (should (eq (syntax-table) ghostel-mode-syntax-table))
+   (should-not (local-variable-p 'meow-ghostel--saved-syntax-table))
+   ;; Double enable must not record the meow table as "previous".
+   (meow-ghostel-mode 1)
+   (meow-ghostel-mode 1)
+   (meow-ghostel-mode -1)
+   (should (eq (syntax-table) ghostel-mode-syntax-table))
+   (meow-ghostel-mode -1)
+   (should (eq (syntax-table) ghostel-mode-syntax-table))))
+
+(ert-deftest meow-ghostel-test-word-boundaries-non-ghostel-buffer ()
+  "The table is only installed in `ghostel-mode' buffers."
+  (with-temp-buffer
+    (let ((before (syntax-table)))
+      (unwind-protect
+          (progn
+            (meow-ghostel-mode 1)
+            (should (eq (syntax-table) before))
+            (should-not meow-ghostel--saved-syntax-table))
+        (meow-ghostel-mode -1)))))
+
+(ert-deftest meow-ghostel-test-word-boundaries-opt-out ()
+  "nil keeps `ghostel-mode-syntax-table' installed."
+  (let ((meow-ghostel-word-boundaries nil))
+    (meow-ghostel-test--with-meow-buffer
+     (should (eq (syntax-table) ghostel-mode-syntax-table))
+     (should-not meow-ghostel--saved-syntax-table))))
+
+(ert-deftest meow-ghostel-test-word-boundaries-plain-setq-realizes ()
+  "A value set without `:set' is realized when the mode installs the table."
+  (unwind-protect
+      (let ((meow-ghostel-word-boundaries "/"))
+        (meow-ghostel-test--with-meow-buffer
+         (should (eq (char-syntax ?/) ?_))
+         (should (eq (char-syntax ?.) ?w))))
+    ;; The shared table was realized from "/"; put the default back.
+    (meow-ghostel--realize-word-boundaries meow-ghostel-word-boundaries)))
+
+(ert-deftest meow-ghostel-test-word-boundaries-live-customization ()
+  "`customize-set-variable' re-realizes and reinstalls in live buffers."
+  (unwind-protect
+      (meow-ghostel-test--with-meow-buffer
+       (should (eq (char-syntax ?.) ?_))
+       (customize-set-variable 'meow-ghostel-word-boundaries "/")
+       (should (eq (syntax-table) meow-ghostel-syntax-table))
+       (should (eq (char-syntax ?.) ?w))
+       (customize-set-variable 'meow-ghostel-word-boundaries nil)
+       (should (eq (syntax-table) ghostel-mode-syntax-table))
+       (custom-reevaluate-setting 'meow-ghostel-word-boundaries)
+       (should (eq (syntax-table) meow-ghostel-syntax-table))
+       (should (eq (char-syntax ?.) ?_)))
+    (custom-reevaluate-setting 'meow-ghostel-word-boundaries)
+    (put 'meow-ghostel-word-boundaries 'customized-value nil)
+    (put 'meow-ghostel-word-boundaries 'theme-value nil)))
+
+(ert-deftest meow-ghostel-test-word-boundaries-non-ascii-inherited ()
+  "Non-ASCII syntax comes from `ghostel-mode-syntax-table'."
+  (meow-ghostel-test--with-meow-buffer
+   (should (eq (char-syntax ?│) ?.))
+   (should (eq (char-syntax ?é) ?w))))
+
 (ert-deftest meow-ghostel-test-advice-survives-disable-in-other-buffer ()
   "Global advice survives one buffer disabling the mode.
 The advice is global but the mode is buffer-local; `advice-remove'

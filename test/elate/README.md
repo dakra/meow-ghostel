@@ -31,6 +31,8 @@ output — so the shell/REPL itself proves the edit landed.
   on the remaps: their `kill-region` succeeds against the render (ghostel clears
   `buffer-read-only` on a live terminal), so `meow-kill-thing`'s read-only
   fallback never runs and an unremapped kill leaves the shell's line untouched.
+  The `*-path` groups cover the Vim-style word boundaries (`b` per path
+  component, `B` over the whole path) and `opt-out` the live `nil` reset.
   `M`/`N` cover the visual opens — `M` fails loudly if `meow-open-below-visual`
   reaches ghostel's RET sender, which executes the command line as typed.
 - `matrix/meow-python3.json` — the REPL, kept separate because it has no `echo` and

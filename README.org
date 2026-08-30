@@ -41,6 +41,14 @@ remaps the =meow-*= commands (never literal keys), so any layout works.
 - Selection motions (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =x=, ...) move point and select
   freely over the rendered rows; =j= stops at the live prompt row and
   navigation in scrollback isn't yanked back by streaming output.
+- *Word boundaries* are Vim-style: =w=, =b=, =e= and =meow-mark-word= stop at
+  path components (=bar= in =~/src/foo/bar.txt=), while the symbol commands
+  (=W=, =B=, =E=, =meow-mark-symbol=) span the whole path; =e=/=b= selections
+  take adjacent boundary characters along, as meow does for any symbol
+  constituent, so =w= is the way to mark exactly one component.  Double-click and
+  other syntax-based word commands see components too while the mode is on;
+  set =meow-ghostel-word-boundaries= to =nil= to keep Ghostel's path-aware
+  words.
 - *Kill/change/replace* (=s=, =c=, =r=) clamp the selection to the typed input
   and apply it via the shell (backspaces + bracketed paste); the killed
   text still lands on the kill ring.  =s= without a selection kills to the
@@ -83,6 +91,11 @@ want prompt navigation.
   =auto= sends it to the terminal only in alt-screen mode (vim, less, …),
   =terminal= always, =meow= never.  Cycle per buffer with
   =meow-ghostel-toggle-send-escape=.
+- =meow-ghostel-word-boundaries= (default: Vim's =iskeyword= complement,
+  every printable ASCII punctuation except =_=) — characters that end words
+  but join symbols.  =nil= keeps =ghostel-mode-syntax-table=; while a string
+  is installed, =ghostel-word-boundary-string= only governs non-ASCII
+  characters.
 
 * Development
 

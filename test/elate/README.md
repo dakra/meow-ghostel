@@ -40,6 +40,8 @@ output — so the shell/REPL itself proves the edit landed.
 - `matrix/meow-python3.json` — the REPL, kept separate because it has no `echo` and
   PyREPL editing doesn't word-split cleanly (word-heavy ops omitted). Its `x i`
   covers the regexp-detected prompt.
+- `matrix/meow-compile.json` — `ghostel-compile` with `compilation-scroll-output` nil:
+  point stays parked at the top in insert state while the run is live.
 - `matrix/meow-boundary-<shell>-ghostel.json` — the input-region boundary suite
   (autosuggestion, right prompt, syntax-highlight tail, multi-line) on
   bash/zsh/fish/nu: `x a` (select line + append) exercises the autosuggestion clamp
@@ -61,6 +63,7 @@ elate run --keep-going --format json --set shell=/opt/homebrew/bin/nu   --set ec
   --set 'setup=def e [...rest] { $rest | str join " " }' --set u_expect=fail "$S"
 
 elate run --keep-going --format json test/elate/matrix/meow-python3.json
+elate run --keep-going --format json test/elate/matrix/meow-compile.json
 for s in bash zsh fish nu; do
   elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
 ```

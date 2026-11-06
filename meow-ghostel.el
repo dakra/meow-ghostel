@@ -207,9 +207,14 @@ whether rendering completed.  Skipped in alt-screen."
         ;; Don't drag point to the cursor while the user reads scrollback;
         ;; redisplay would yank the viewport back to the bottom each frame.
         ;; (No window showing the buffer → treat as following.)
+        ;; A `ghostel-inhibit-anchor-functions' veto (e.g. a compile
+        ;; buffer with `compilation-scroll-output' nil) blocks the drag
+        ;; the same way it blocks the window anchor.
         (when (and (meow-insert-mode-p)
                    (let ((win (get-buffer-window (current-buffer) t)))
-                     (or (null win) (ghostel--window-anchored-p win))))
+                     (and (or (null win) (ghostel--window-anchored-p win))
+                          (not (run-hook-with-args-until-success
+                                'ghostel-inhibit-anchor-functions win nil)))))
           (meow-ghostel--reset-cursor-point))
         (when saved-mark
           (set-marker (mark-marker) (min saved-mark (point-max))))

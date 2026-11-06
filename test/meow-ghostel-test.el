@@ -606,6 +606,31 @@ while the user reads scrollback."
      (meow-ghostel--around-redraw #'ignore 'fake)
      (should (= (point) (point-min))))))
 
+(ert-deftest meow-ghostel-test-around-redraw-honors-anchor-veto ()
+  "In insert state a `ghostel-inhibit-anchor-functions' veto blocks the snap.
+The veto sees the window showing the buffer and a nil FORCE."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "hello world")
+   (setq-local ghostel--term 'fake)
+   (setq-local ghostel--cursor-pos '(11 . 0))
+   (setq-local ghostel--cursor-char-pos 12)
+   (let (veto-args)
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
+               ((symbol-function 'meow-ghostel--insert-enter) #'ignore)
+               ((symbol-function 'get-buffer-window)
+                (lambda (&rest _) 'fake-win))
+               ((symbol-function 'ghostel--window-anchored-p) (lambda (_) t)))
+       (add-hook 'ghostel-inhibit-anchor-functions
+                 (lambda (window force)
+                   (setq veto-args (list window force))
+                   t)
+                 nil t)
+       (meow--switch-state 'insert)
+       (goto-char (point-min))
+       (meow-ghostel--around-redraw #'ignore 'fake)
+       (should (= (point) (point-min)))
+       (should (equal veto-args '(fake-win nil)))))))
+
 (ert-deftest meow-ghostel-test-around-redraw-passes-args-and-return ()
   "The advice forwards trailing arguments (FULL, FORCE-SYNC on ghostel
 0.44+) and returns the original's value; ghostel uses it to clear its

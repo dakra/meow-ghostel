@@ -1,0 +1,41 @@
+{
+  "name": "meow-ghostel-compile",
+  "comment": "ghostel-compile with compilation-scroll-output nil: point stays parked at the top of the buffer in insert state. The output is short, so the window shows the live cursor and counts as following; only the ghostel-inhibit-anchor-functions veto keeps the redraw advice from dragging point to it.",
+  "session": {
+    "ui": "tty",
+    "size": "100x30",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/src/dakra/meow-ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(require 'ghostel-compile)",
+      "(setq compilation-scroll-output nil)"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow",
+      "ELATE_GHOSTEL_DIR": "/Users/daniel/.emacs.d/lib/ghostel"
+    }
+  },
+  "steps": [
+    {
+      "group": "scroll-output-nil",
+      "comment": "point and window-point stay at the top while the run is live"
+    },
+    {
+      "eval": "(ghostel-compile \"echo aa; echo bb; echo doneXY; sleep 20\")"
+    },
+    {
+      "wait": "text",
+      "pattern": "^doneXY$",
+      "buffer": "*ghostel-compile*",
+      "timeout": 15.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "eval": "(with-current-buffer \"*ghostel-compile*\" (let ((w (get-buffer-window (current-buffer) t))) (unless (and meow-ghostel-mode (meow-insert-mode-p) w (ghostel--window-anchored-p w)) (error \"PRECONDITION mode %S state %S window %S\" meow-ghostel-mode (meow--current-state) w)) (unless (and (= 1 (point)) (= 1 (window-point w))) (error \"DRAGGED point %d window-point %d cursor %S\" (point) (window-point w) ghostel--cursor-char-pos))))"
+    }
+  ]
+}

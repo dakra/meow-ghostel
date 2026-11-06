@@ -238,8 +238,8 @@ insert state with point off the cursor, unless FORCE."
   "Return non-nil where ghostel may deactivate a repainted selection.
 `:before-while' advice on `ghostel--deactivate-repainted-region'.
 Outside insert state on the main screen the selection is the operand
-of the next meow command and stays active: without it a kill falls
-back to `meow-C-k' and deletes to the end of the input instead."
+of the next meow command and stays active: without it a kill deletes
+to the end of the input instead."
   (or (not meow-ghostel-mode)
       (not meow-mode)
       (meow-insert-mode-p)

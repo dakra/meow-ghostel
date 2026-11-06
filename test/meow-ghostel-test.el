@@ -725,6 +725,49 @@ returns the original's value."
       (should (= 6 (length keys-sent)))
       (should (cl-every (lambda (k) (equal k "left")) keys-sent)))))
 
+(ert-deftest meow-ghostel-test-goto-input-position-ignores-hidden-cell ()
+  "A cell hidden under an oversized prompt glyph does not shift the arrow count.
+The renderer hides the blank cell a standalone icon claims with `(space :width 0)'."
+  (meow-ghostel-test--with-input-fixture "⏵ $ " "1234"
+    ;; The fixture took `ghostel--cursor-pos' before the cell was hidden,
+    ;; so it still holds the terminal column, one past `current-column'.
+    (let ((inhibit-read-only t))
+      (put-text-property 2 3 'display '(space :width 0)))
+    (let ((keys-sent '()))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _)
+                   (push key keys-sent))))
+        (meow-ghostel-goto-input-position 5)) ; start of "1234"
+      (should (= 4 (length keys-sent)))
+      (should (cl-every (lambda (k) (equal k "left")) keys-sent)))))
+
+(ert-deftest meow-ghostel-test-goto-input-position-crosses-hidden-cell ()
+  "A hidden cell between the target and the cursor still takes an arrow.
+The renderer hides the blank after an oversized glyph in typed input too."
+  (meow-ghostel-test--with-input-fixture "$ " "a ⏵ bc"
+    (let ((inhibit-read-only t))
+      (put-text-property 6 7 'display '(space :width 0)))
+    (let ((keys-sent '()))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _)
+                   (push key keys-sent))))
+        (meow-ghostel-goto-input-position 3)) ; on "a"
+      (should (= 6 (length keys-sent)))
+      (should (cl-every (lambda (k) (equal k "left")) keys-sent)))))
+
+(ert-deftest meow-ghostel-test-reset-cursor-point-prefers-char-pos ()
+  "Point lands on the renderer's cursor position, not the terminal column.
+The two differ once a cell left of the cursor is hidden."
+  (meow-ghostel-test--with-input-fixture "⏵ $ " "1234"
+    ;; Cursor on "3": buffer position 7, terminal column 6.
+    (setq ghostel--cursor-char-pos 7
+          ghostel--cursor-pos '(6 . 0))
+    (let ((inhibit-read-only t))
+      (put-text-property 2 3 'display '(space :width 0)))
+    (goto-char (point-min))
+    (meow-ghostel--reset-cursor-point)
+    (should (= 7 (point)))))
+
 (ert-deftest meow-ghostel-test-goto-input-position-no-op-at-target ()
   "No keys are sent when point already matches the terminal cursor."
   (meow-ghostel-test--with-input-fixture "$ " "hello"

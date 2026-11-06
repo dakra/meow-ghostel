@@ -169,12 +169,13 @@ and `ghostel--line-input-end', so meow's commands apply directly."
   (max 0 (- (count-lines (point-min) (point-max)) ghostel--term-rows)))
 
 (defun meow-ghostel--reset-cursor-point ()
-  "Move Emacs point to the terminal cursor.
-`ghostel--cursor-pos' is viewport-relative; its row is offset by scrollback."
-  (when (and ghostel--term ghostel--term-rows ghostel--cursor-pos)
+  "Move Emacs point to the terminal cursor."
+  (cond
+   (ghostel--cursor-char-pos (goto-char ghostel--cursor-char-pos))
+   ((and ghostel--term ghostel--term-rows ghostel--cursor-pos)
     (goto-char (point-min))
     (forward-line (+ (meow-ghostel--scrollback-lines) (cdr ghostel--cursor-pos)))
-    (move-to-column (car ghostel--cursor-pos))))
+    (move-to-column (car ghostel--cursor-pos)))))
 
 (defun meow-ghostel--point-viewport-row ()
   "Return the viewport row of point, 0-indexed, or nil.
@@ -361,14 +362,33 @@ process is already a no-op."
     (when ghostel--redraw-timer
       (ghostel--redraw-now (current-buffer)))))
 
+(defun meow-ghostel--cell-column (pos)
+  "Return the column of POS, counting every terminal cell on its row.
+The renderer hides the blank cell a standalone oversized glyph claims
+with a zero-width space display spec.  `current-column' skips that cell,
+but the shell's line editor still steps over it."
+  (save-excursion
+    (goto-char pos)
+    (let ((col (current-column))
+          (p (line-beginning-position)))
+      (while (< p pos)
+        (when (equal (get-text-property p 'display) '(space :width 0))
+          (setq col (1+ col)))
+        (setq p (1+ p)))
+      col)))
+
 (defun meow-ghostel-goto-input-position (pos)
   "Drive the terminal cursor and Emacs point to buffer position POS.
 On the cursor row a rightward target is clamped to `meow-ghostel--input-end',
 so the move never right-arrows across a trailing autosuggestion, which the
 shell would accept (zsh-autosuggestions / fish).  Only meaningful in
-semi-char mode.  Returns non-nil when it ran."
+semi-char mode.  Returns non-nil when it ran.
+Both ends of the horizontal move are measured with
+`meow-ghostel--cell-column'."
   (when (and ghostel--term ghostel--cursor-pos)
-    (let* ((start-col (car ghostel--cursor-pos))
+    (let* ((start-col (if ghostel--cursor-char-pos
+                          (meow-ghostel--cell-column ghostel--cursor-char-pos)
+                        (car ghostel--cursor-pos)))
            (start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
            (dy (- target-row-vp start-row-vp)))
@@ -379,7 +399,7 @@ semi-char mode.  Returns non-nil when it ran."
                  ghostel--cursor-char-pos
                  (> pos ghostel--cursor-char-pos))
         (setq pos (min pos (or (meow-ghostel--input-end) pos))))
-      (let ((dx (- (save-excursion (goto-char pos) (current-column)) start-col)))
+      (let ((dx (- (meow-ghostel--cell-column pos) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
               ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
         (cond ((> dx 0) (dotimes (_ dx) (ghostel--send-encoded "right" "")))

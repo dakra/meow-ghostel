@@ -21,6 +21,8 @@ output — so the shell/REPL itself proves the edit landed.
 - `matrix/meow-shells.json` — **one templated scenario driven once per shell** (`bash,
   zsh, fish, nu`). Meow is selection-first, so word ops select backward from the input
   end with `b` (back-word) before `s`/`c`/`r`; `x s`/`x c` are the line kill/change;
+  `x i` enters insert from a selection that starts inside the prompt (point must land
+  on the input start);
   `s` with no selection exercises the C-k fallback; plus a keypad smoke (`SPC` in
   normal state) and insert-state Ctrl passthrough groups. `{{u_expect}}` flips the
   nu-only undo xfail (meow has no paste-before, so there is no `P` group).
@@ -36,7 +38,8 @@ output — so the shell/REPL itself proves the edit landed.
   `M`/`N` cover the visual opens — `M` fails loudly if `meow-open-below-visual`
   reaches ghostel's RET sender, which executes the command line as typed.
 - `matrix/meow-python3.json` — the REPL, kept separate because it has no `echo` and
-  PyREPL editing doesn't word-split cleanly (word-heavy ops omitted).
+  PyREPL editing doesn't word-split cleanly (word-heavy ops omitted). Its `x i`
+  covers the regexp-detected prompt.
 - `matrix/meow-boundary-<shell>-ghostel.json` — the input-region boundary suite
   (autosuggestion, right prompt, syntax-highlight tail, multi-line) on
   bash/zsh/fish/nu: `x a` (select line + append) exercises the autosuggestion clamp

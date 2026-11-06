@@ -85,6 +85,31 @@
       "timeout": 8.0
     },
     {
+      "group": "x-i",
+      "comment": "x (line) puts the selection start inside the prompt; i starts at the input start"
+    },
+    {
+      "type": "31"
+    },
+    {
+      "keys": "<escape> x i"
+    },
+    {
+      "eval": "(unless (= (point) (ghostel-input-start-point)) (error \"POINT %d input-start %d\" (point) (ghostel-input-start-point)))"
+    },
+    {
+      "type": "1000+"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^1031$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
       "group": "h-d",
       "comment": "h then d -- forward-delete last char"
     },

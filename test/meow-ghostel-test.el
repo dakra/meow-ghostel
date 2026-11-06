@@ -977,6 +977,89 @@ The clamp then leaves BEG alone instead of collapsing the range."
       (should (= 4 target))
       (should (meow-insert-mode-p)))))
 
+(ert-deftest meow-ghostel-test-insert-in-prompt-lands-at-input-start ()
+  "Insert / append with point inside the prompt land at the input start.
+The prompt is regexp-detected and the cursor sits on the empty input."
+  (dolist (cmd '(meow-ghostel-insert meow-ghostel-append))
+    (meow-ghostel-test--with-meow-buffer
+     (insert "old output\n> ")
+     (let (sent)
+       (cl-letf (((symbol-function 'ghostel--send-encoded)
+                  (lambda (key &rest _) (push key sent)))
+                 ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+                 (ghostel--cursor-pos '(2 . 1))
+                 (ghostel--cursor-char-pos 14))
+         (meow--switch-state 'normal)
+         (goto-char 12)
+         (funcall cmd)
+         (should (meow-insert-mode-p))
+         (should (= (point) 14))
+         (should-not sent))))))
+
+(ert-deftest meow-ghostel-test-insert-in-osc133-prompt-lands-at-input-start ()
+  "Insert from inside an OSC 133 prompt stops at the input start.
+The arrows cover the typed input only, once."
+  (meow-ghostel-test--with-input-fixture "$ " "hello"
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key &rest _)
+                   (push key sent)
+                   ;; Stand in for the shell's echo: the cursor follows.
+                   (when (equal key "left")
+                     (setq ghostel--cursor-char-pos
+                           (1- ghostel--cursor-char-pos))
+                     (setcar ghostel--cursor-pos
+                             (1- (car ghostel--cursor-pos))))))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (goto-char (point-min))
+        (meow-ghostel-insert))
+      (should (meow-insert-mode-p))
+      (should (= (point) 3))
+      (should (equal sent (make-list 5 "left"))))))
+
+(ert-deftest meow-ghostel-test-goto-input-position-stops-at-input-start ()
+  "A leftward target inside the prompt stops at the input start."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "> abc")
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(5 . 0))
+               (ghostel--cursor-char-pos 6))
+       (meow-ghostel-goto-input-position 1)
+       (should (= (point) 3))
+       (should (equal sent '("left" "left" "left")))))))
+
+(ert-deftest meow-ghostel-test-goto-input-position-unclamped-without-prompt ()
+  "Without a detected prompt a leftward target is not clamped."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "abcdef")
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(6 . 0))
+               (ghostel--cursor-char-pos 7))
+       (meow-ghostel-goto-input-position 1)
+       (should (= (point) 1))
+       (should (= 6 (length sent)))))))
+
+(ert-deftest meow-ghostel-test-goto-input-position-ignores-prompt-past-cursor ()
+  "A regexp prompt match ending past the cursor does not clamp the move."
+  (meow-ghostel-test--with-meow-buffer
+   (insert "a> bc")
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(1 . 0))
+               (ghostel--cursor-char-pos 2))
+       (should (> (ghostel--cursor-row-input-start) 2))
+       (meow-ghostel-goto-input-position 1)
+       (should (= (point) 1))
+       (should (equal sent '("left")))))))
+
 (ert-deftest meow-ghostel-test-insert-goes-to-selection-start ()
   "With a selection, `meow-ghostel-insert' targets the region beginning."
   (meow-ghostel-test--with-input-fixture "$ " "hello"

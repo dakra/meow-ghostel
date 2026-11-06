@@ -5,7 +5,7 @@
 ;; Author: Daniel Kraus <daniel@kraus.my>
 ;; URL: https://github.com/dakra/meow-ghostel
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.49.0"))
+;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.61.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -381,8 +381,9 @@ but the shell's line editor still steps over it."
   "Drive the terminal cursor and Emacs point to buffer position POS.
 On the cursor row a rightward target is clamped to `meow-ghostel--input-end',
 so the move never right-arrows across a trailing autosuggestion, which the
-shell would accept (zsh-autosuggestions / fish).  Only meaningful in
-semi-char mode.  Returns non-nil when it ran.
+shell would accept (zsh-autosuggestions / fish).  A leftward one is clamped
+to the input start after a detected prompt.  Only meaningful in semi-char
+mode.  Returns non-nil when it ran.
 Both ends of the horizontal move are measured with
 `meow-ghostel--cell-column'."
   (when (and ghostel--term ghostel--cursor-pos)
@@ -392,13 +393,16 @@ Both ends of the horizontal move are measured with
            (start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
            (dy (- target-row-vp start-row-vp)))
-      ;; Clamp only a rightward, same-row target: at end-of-input a right
-      ;; arrow accepts the greyed suggestion.
-      ;; `input-end' excludes it, so stopping there means we never accept.
-      (when (and (zerop dy)
-                 ghostel--cursor-char-pos
-                 (> pos ghostel--cursor-char-pos))
-        (setq pos (min pos (or (meow-ghostel--input-end) pos))))
+      (when (and (zerop dy) ghostel--cursor-char-pos)
+        (if (> pos ghostel--cursor-char-pos)
+            ;; At end-of-input a right arrow accepts the greyed suggestion.
+            ;; `input-end' excludes it, so stopping there never accepts.
+            (setq pos (min pos (or (meow-ghostel--input-end) pos)))
+          ;; The shell cannot move left into the prompt; the regexp
+          ;; fallback can match past the cursor on a prompt-less row.
+          (when-let* ((start (ghostel--cursor-row-input-start))
+                      ((<= start ghostel--cursor-char-pos)))
+            (setq pos (max pos start)))))
       (let ((dx (- (meow-ghostel--cell-column pos) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
               ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))

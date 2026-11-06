@@ -272,7 +272,7 @@ is kept, but not inside a detected prompt."
       (meow-ghostel--reset-cursor-point)
       (when col
         (move-to-column col)
-        (when-let* ((start (ghostel--cursor-row-input-start)))
+        (when-let* ((start (meow-ghostel--input-start)))
           (goto-char (max (point) start)))))
     t))
 
@@ -389,7 +389,10 @@ padding; a trailing autosuggestion is excluded (boundary at the cursor)."
   "Return the prompt boundary on the cursor row, or nil if undetected.
 Unlike `ghostel-input-start-point', returns nil (not the cursor) when no
 prompt is recognized, so a command's BEG stays unclamped rather than
-collapsing the range — vterm's behaviour for shells without prompt tracking."
+collapsing the range — vterm's behaviour for shells without prompt tracking.
+A prompt that ends at the cursor counts as unrecognized too: a shell that
+marks its prompt but not its input (fish before 4.3) leaves typed text
+marked as prompt, so there the prompt ends at the cursor on every row."
   (let ((s (ghostel-input-start-point)))
     (and s ghostel--cursor-char-pos (< s ghostel--cursor-char-pos) s)))
 
@@ -461,10 +464,8 @@ Both ends of the horizontal move are measured with
             ;; At end-of-input a right arrow accepts the greyed suggestion.
             ;; `input-end' excludes it, so stopping there never accepts.
             (setq pos (min pos (or (meow-ghostel--input-end) pos)))
-          ;; The shell cannot move left into the prompt; the regexp
-          ;; fallback can match past the cursor on a prompt-less row.
-          (when-let* ((start (ghostel--cursor-row-input-start))
-                      ((<= start ghostel--cursor-char-pos)))
+          ;; The shell cannot move left into the prompt.
+          (when-let* ((start (meow-ghostel--input-start)))
             (setq pos (max pos start)))))
       (let ((dx (- (meow-ghostel--cell-column pos) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))

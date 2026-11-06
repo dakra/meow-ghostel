@@ -78,6 +78,22 @@ for s in bash zsh fish nu; do
   elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
 ```
 
+### Shells that do not mark their input (OSC 133;A without B)
+
+fish before 4.3 sends 133;A but no 133;B, so typed text is marked as prompt and the
+prompt run always ends at the cursor. `lib/fish-no-mark-prompt/fish` reproduces that
+on a current fish (`--features no-mark-prompt`; `ELATE_FISH` overrides the fish path):
+
+```sh
+elate run --keep-going --format json --set shell=$PWD/test/elate/lib/fish-no-mark-prompt/fish \
+  --set echo=echo \
+  --set 'setup=function fish_prompt; echo -n "> "; end; function fish_right_prompt; end' "$S"
+```
+
+Three groups fail there by design, all of which need the input start: `I`,
+`N-open-above-visual` and `x-i`. Every other group must pass: with the input start
+unknown, kills and leftward moves stay unclamped.
+
 Each run's JSON carries a `groups[]` array (`name` + `status` = `PASS`/`FAIL`/`XFAIL`/
 `XPASS`). The run exits non-zero on any genuine `FAIL` or `XPASS` (`xfail` is
 non-gating).

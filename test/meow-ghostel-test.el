@@ -388,12 +388,31 @@ The cursor is at column 2; `sent' collects the keys sent to the terminal."
 (ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-clamps-to-input ()
   "A kept column inside the prompt moves to the input start."
   (meow-ghostel-test--with-readonly-fixture
-    (setq-local ghostel--cursor-char-pos 3)
-    (ghostel-copy-mode)
-    (move-to-column 1)
-    (call-interactively #'meow-ghostel-insert)
-    (should (= (point) 3))
-    (should-not sent)))
+    (setq-local ghostel--cursor-char-pos 8)
+    (cl-letf ((ghostel--cursor-pos '(7 . 0)))
+      (ghostel-copy-mode)
+      (move-to-column 1)
+      (call-interactively #'meow-ghostel-insert)
+      (should (= (point) 3))
+      (should (equal sent (make-list 5 "left"))))))
+
+(ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-prompt-at-cursor ()
+  "A prompt run ending at the cursor does not clamp the kept column.
+On a shell that marks typed text as prompt the column lies in the input."
+  (meow-ghostel-test--with-input-fixture "> echo hello" ""
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                ((symbol-function 'ghostel--anchor-window) #'ignore)
+                ((symbol-function 'ghostel-force-redraw) #'ignore)
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+                ((symbol-function 'ghostel--send-encoded)
+                 (lambda (key &rest _) (push key sent))))
+        (ghostel-copy-mode)
+        (move-to-column 4)
+        (call-interactively #'meow-ghostel-insert))
+      (should (eq ghostel--input-mode 'semi-char))
+      (should (= 5 (point)))
+      (should (equal sent (make-list 8 "left"))))))
 
 (ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-no-prompt-keeps-column ()
   "Without a detected prompt the kept column is not clamped to the cursor."
@@ -1225,22 +1244,46 @@ The clamp then leaves BEG alone instead of collapsing the range."
 
 (ert-deftest meow-ghostel-test-insert-in-prompt-lands-at-input-start ()
   "Insert / append with point inside the prompt land at the input start.
-The prompt is regexp-detected and the cursor sits on the empty input."
+The prompt is regexp-detected; the arrows cover the typed input only, once."
   (dolist (cmd '(meow-ghostel-insert meow-ghostel-append))
     (meow-ghostel-test--with-meow-buffer
-     (insert "old output\n> ")
+     (insert "old output\n> abc")
      (let (sent)
        (cl-letf (((symbol-function 'ghostel--send-encoded)
-                  (lambda (key &rest _) (push key sent)))
+                  (lambda (key &rest _)
+                    (push key sent)
+                    ;; Stand in for the shell's echo: the cursor follows.
+                    (when (equal key "left")
+                      (setq ghostel--cursor-char-pos
+                            (1- ghostel--cursor-char-pos))
+                      (setq ghostel--cursor-pos
+                            (cons (1- (car ghostel--cursor-pos)) 1)))))
                  ((symbol-function 'meow-ghostel--sync-render) #'ignore)
-                 (ghostel--cursor-pos '(2 . 1))
-                 (ghostel--cursor-char-pos 14))
+                 (ghostel--cursor-pos '(5 . 1))
+                 (ghostel--cursor-char-pos 17))
          (meow--switch-state 'normal)
          (goto-char 12)
          (funcall cmd)
          (should (meow-insert-mode-p))
          (should (= (point) 14))
-         (should-not sent))))))
+         (should (equal sent (make-list 3 "left"))))))))
+
+(ert-deftest meow-ghostel-test-prompt-ending-at-cursor-bounds-nothing ()
+  "A prompt run that ends at the cursor is no input start.
+A shell that marks its prompt but not its input (fish before 4.3) leaves
+typed text marked as prompt, so the run ends at the cursor on every row;
+clamping to it would block every leftward move."
+  (meow-ghostel-test--with-input-fixture "> echo hello" ""
+    (should (= 13 ghostel--cursor-char-pos))
+    (should (= 13 (ghostel--cursor-row-input-start)))
+    (should-not (meow-ghostel--input-start))
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key &rest _) (push key sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (meow-ghostel-goto-input-position 8))
+      (should (= 8 (point)))
+      (should (equal sent (make-list 5 "left"))))))
 
 (ert-deftest meow-ghostel-test-insert-in-osc133-prompt-lands-at-input-start ()
   "Insert from inside an OSC 133 prompt stops at the input start.

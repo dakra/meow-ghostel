@@ -1,0 +1,5 @@
+#!/bin/sh
+# fish with its native OSC 133 marking off, so ghostel's fish integration
+# marks prompts the way fish before 4.3 does: 133;A without 133;B.
+# Named `fish' so ghostel still picks the fish integration.
+exec "${ELATE_FISH:-/opt/homebrew/bin/fish}" --features no-mark-prompt "$@"

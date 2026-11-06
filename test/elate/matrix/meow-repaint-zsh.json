@@ -1,0 +1,84 @@
+{
+  "name": "meow-ghostel-repaint-zsh",
+  "comment": "A meow selection on the input row survives the shell repainting that row. zsh redraws its prompt every second (TMOUT + TRAPALRM running zle reset-prompt); ghostel deactivates a region whose rows a redraw rewrote, which would turn the following s (kill) into its no-selection fallback (C-k, kill to the end of input). The shell's output is the oracle: only the selected word is gone.",
+  "session": {
+    "ui": "tty",
+    "size": "100x30",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/src/dakra/meow-ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/zsh\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow",
+      "ELATE_GHOSTEL_DIR": "/Users/daniel/.emacs.d/lib/ghostel"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "setup",
+      "comment": "short prompt, redrawn every second; count the redraws that rewrite an active region"
+    },
+    {
+      "eval": "(progn (defvar meow-ghostel-elate--repaints 0) (advice-add 'ghostel--deactivate-repainted-region :before (lambda () (when (and (region-active-p) ghostel--repainted-region (< (region-beginning) (cdr ghostel--repainted-region)) (> (region-end) (car ghostel--repainted-region))) (setq meow-ghostel-elate--repaints (1+ meow-ghostel-elate--repaints))))))"
+    },
+    {
+      "type": "PROMPT='> '; RPROMPT=''; TMOUT=1; TRAPALRM() { zle reset-prompt }"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "b-b-s",
+      "comment": "select m40X backward, let the prompt repaint under the selection, then kill it"
+    },
+    {
+      "type": "echo m40X junk"
+    },
+    {
+      "keys": "<escape> b b"
+    },
+    {
+      "eval": "(unless (and (region-active-p) (string-prefix-p \"m40X\" (buffer-substring-no-properties (region-beginning) (region-end)))) (error \"SELECTION %S\" (and (region-active-p) (buffer-substring-no-properties (region-beginning) (region-end)))))"
+    },
+    {
+      "eval": "(setq meow-ghostel-elate--repaints 0)"
+    },
+    {
+      "wait": "until",
+      "pred": "(>= meow-ghostel-elate--repaints 2)",
+      "buffer": "*ghostel*",
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (and (region-active-p) (string-prefix-p \"m40X\" (buffer-substring-no-properties (region-beginning) (region-end)))) (error \"SELECTION LOST %S\" (and (region-active-p) (buffer-substring-no-properties (region-beginning) (region-end)))))"
+    },
+    {
+      "keys": "s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^junk$",
+      "timeout": 8.0
+    }
+  ]
+}

@@ -46,6 +46,8 @@ output — so the shell/REPL itself proves the edit landed.
   cursor row but not inside the prompt; entering copy mode from insert state lands in normal
   state. `A` fails loudly if `meow-open-below` reaches copy mode's RET binding, which
   executes the command line as typed.
+- `matrix/meow-repaint-zsh.json` — a selection on the input row survives zsh redrawing
+  its prompt every second; `s` then kills the selected word, not the rest of the line.
 - `matrix/meow-compile.json` — `ghostel-compile` with `compilation-scroll-output` nil:
   point stays parked at the top in insert state while the run is live.
 - `matrix/meow-boundary-<shell>-ghostel.json` — the input-region boundary suite
@@ -71,6 +73,7 @@ elate run --keep-going --format json --set shell=/opt/homebrew/bin/nu   --set ec
 elate run --keep-going --format json test/elate/matrix/meow-python3.json
 elate run --keep-going --format json test/elate/matrix/meow-compile.json
 elate run --keep-going --format json test/elate/matrix/meow-readonly.json
+elate run --keep-going --format json test/elate/matrix/meow-repaint-zsh.json
 for s in bash zsh fish nu; do
   elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
 ```

@@ -653,9 +653,15 @@ is gone."
                                    'ghostel--redraw))
           (should (advice-member-p #'meow-ghostel--override-cursor-style
                                    'ghostel--apply-cursor-style))
+          (should (advice-member-p
+                   #'meow-ghostel--deactivate-repainted-region-p
+                   'ghostel--deactivate-repainted-region))
           (with-current-buffer b (meow-ghostel-mode -1))
           (should-not (advice-member-p #'meow-ghostel--around-redraw
                                        'ghostel--redraw))
+          (should-not (advice-member-p
+                       #'meow-ghostel--deactivate-repainted-region-p
+                       'ghostel--deactivate-repainted-region))
           (should-not (advice-member-p #'meow-ghostel--override-cursor-style
                                        'ghostel--apply-cursor-style)))
       (when (buffer-live-p a) (kill-buffer a))
@@ -762,6 +768,28 @@ and the repaint's `deactivate-mark' is suppressed."
    (should-not deactivate-mark)
    (should (= 2 (mark t)))
    (should (region-active-p))))
+
+(ert-deftest meow-ghostel-test-repainted-region-kept-outside-insert ()
+  "Ghostel may drop a repainted selection only in insert state, in
+alt-screen, or without meow or the mode."
+  (meow-ghostel-test--with-meow-buffer
+   (meow--switch-state 'normal)
+   (should-not (meow-ghostel--deactivate-repainted-region-p))
+   (meow--switch-state 'motion)
+   (should-not (meow-ghostel--deactivate-repainted-region-p))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) t)))
+     (should (meow-ghostel--deactivate-repainted-region-p)))
+   (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+     (meow--switch-state 'insert))
+   (should (meow-ghostel--deactivate-repainted-region-p))
+   (meow--switch-state 'normal)
+   (meow-mode -1)
+   (should (meow-ghostel--deactivate-repainted-region-p))
+   (meow-mode 1)
+   (meow--switch-state 'normal)
+   (should-not (meow-ghostel--deactivate-repainted-region-p))
+   (meow-ghostel-mode -1)
+   (should (meow-ghostel--deactivate-repainted-region-p))))
 
 (ert-deftest meow-ghostel-test-around-redraw-bypassed-in-alt-screen ()
   "In alt-screen the advice defers entirely to the original."
@@ -2237,6 +2265,38 @@ and passes the module's completed-rendering result through."
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
       (should (ghostel--redraw term t t)))))
+
+(defmacro meow-ghostel-test--with-repainted-selection (state &rest body)
+  "Select \"echo\" on the row \"$ echo hello\" in meow STATE, repaint
+the row through a full redraw cycle, then run BODY."
+  (declare (indent 1) (debug t))
+  `(meow-ghostel-test--with-buffer 6 40 "$ echo hello"
+     (save-window-excursion
+       (switch-to-buffer (current-buffer))
+       (ghostel--redraw-now (current-buffer) t)
+       (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+         (meow--switch-state ,state))
+       (goto-char 7)
+       (push-mark 3 t t)
+       (should (region-active-p))
+       (ghostel--write-vt term "\r$ ECHO hello")
+       (ghostel--redraw-now (current-buffer) t)
+       (should (equal "$ ECHO hello"
+                      (buffer-substring-no-properties
+                       (point-min) (line-end-position 1))))
+       ,@body)))
+
+(ert-deftest meow-ghostel-test-selection-survives-repaint-normal-native ()
+  "Native: a selection on a repainted row stays active in normal state."
+  (meow-ghostel-test--with-repainted-selection 'normal
+    (should (region-active-p))
+    (should (= 3 (region-beginning)))
+    (should (= 7 (region-end)))))
+
+(ert-deftest meow-ghostel-test-selection-dropped-on-repaint-insert-native ()
+  "Native: in insert state ghostel deactivates a repainted selection."
+  (meow-ghostel-test--with-repainted-selection 'insert
+    (should-not (region-active-p))))
 
 ;; -----------------------------------------------------------------------
 ;; Runner

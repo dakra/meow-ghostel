@@ -189,7 +189,8 @@ Comparable to `ghostel--cursor-pos''s row."
 ;; viewport on each redraw without snapping point to the cursor; right
 ;; for normal state.  Point follows the cursor only in insert state
 ;; (where typed chars land there); an active selection is restored around
-;; the repaint.
+;; the repaint, and outside insert state it stays active even when the
+;; repaint rewrote its rows.
 
 (defun meow-ghostel--around-redraw (orig-fn term &rest args)
   "Apply meow point/selection handling around `ghostel--redraw'.
@@ -232,6 +233,17 @@ insert state with point off the cursor, unless FORCE."
        (not (meow-insert-mode-p))
        ghostel--cursor-char-pos
        (/= (point) ghostel--cursor-char-pos)))
+
+(defun meow-ghostel--deactivate-repainted-region-p (&rest _)
+  "Return non-nil where ghostel may deactivate a repainted selection.
+`:before-while' advice on `ghostel--deactivate-repainted-region'.
+Outside insert state on the main screen the selection is the operand
+of the next meow command and stays active: without it a kill falls
+back to `meow-C-k' and deletes to the end of the input instead."
+  (or (not meow-ghostel-mode)
+      (not meow-mode)
+      (meow-insert-mode-p)
+      (ghostel-alt-screen-p)))
 
 ;; Cursor style: let meow control cursor shape
 
@@ -1166,6 +1178,8 @@ Enabling installs global advice while any buffer has the mode enabled."
         (add-hook 'ghostel-inhibit-anchor-functions
                   #'meow-ghostel--anchor-inhibit nil t)
         (advice-add 'ghostel--redraw :around #'meow-ghostel--around-redraw)
+        (advice-add 'ghostel--deactivate-repainted-region :before-while
+                    #'meow-ghostel--deactivate-repainted-region-p)
         (advice-add 'ghostel--apply-cursor-style :around
                     #'meow-ghostel--override-cursor-style)
         (meow--update-cursor))
@@ -1187,6 +1201,8 @@ Enabling installs global advice while any buffer has the mode enabled."
     (kill-local-variable 'meow--insert-function)
     (unless (meow-ghostel--any-active-elsewhere-p (current-buffer))
       (advice-remove 'ghostel--redraw #'meow-ghostel--around-redraw)
+      (advice-remove 'ghostel--deactivate-repainted-region
+                     #'meow-ghostel--deactivate-repainted-region-p)
       (advice-remove 'ghostel--apply-cursor-style
                      #'meow-ghostel--override-cursor-style))))
 

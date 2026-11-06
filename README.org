@@ -73,6 +73,14 @@ remaps the =meow-*= commands (never literal keys), so any layout works.
 - Outside semi-char input mode (Ghostel's =line= / =copy= / =emacs= / =char=
   modes) commands fall through to vanilla meow as well; in line mode the
   input is plain buffer text, so meow edits it directly.
+- *Copy and Emacs mode* cooperate with the meow states.  Entering one from
+  insert state switches to normal state, so motion keys browse the buffer
+  instead of leaving the mode and typing into the terminal.  Entering
+  insert state (=i=, =a=, =A=, =I=) leaves the mode and returns to the prompt;
+  =i= and =a= keep point's column on the cursor row.  In normal and motion state,
+  prompt jumps and search landings stay in semi-char: there
+  =ghostel-prompt-navigation-input-mode= and =ghostel-point-leave-input-mode=
+  are =nil= buffer-locally.
 
 Not supported: BEACON state (its commands edit the buffer directly, but the
 terminal render owns that text, so the edits reach the shell at the terminal

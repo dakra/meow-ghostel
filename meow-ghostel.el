@@ -28,6 +28,8 @@
 ;;
 ;; Outside semi-char input mode (`line' / `copy' / `emacs' / `char'
 ;; modes, or an alt-screen TUI) every command falls through to `meow-*'.
+;; Entering insert state leaves copy or Emacs mode; entering one of them
+;; from insert state switches to normal state.
 ;;
 ;; Meow ships no default keybindings, so all commands are installed via
 ;; `[remap meow-*]' bindings and buffer-local `meow--kbd-*' overrides;
@@ -248,17 +250,61 @@ ORIG-FN is the advised setter (STYLE, VISIBLE); deferred to in alt-screen."
 
 ;; Meow state hooks
 
+(defun meow-ghostel--exit-readonly ()
+  "Leave copy or Emacs mode for the terminal; return non-nil if it did.
+The exit moves point to the live cursor.  A column on the cursor's row
+is kept, but not inside a detected prompt."
+  (when (memq ghostel--input-mode '(copy emacs))
+    (let ((col (and (ghostel-point-on-cursor-row-p) (current-column))))
+      (ghostel-readonly-exit)
+      (meow-ghostel--reset-cursor-point)
+      (when col
+        (move-to-column col)
+        (when-let* ((start (ghostel--cursor-row-input-start)))
+          (goto-char (max (point) start)))))
+    t))
+
 (defun meow-ghostel--insert-enter ()
   "Drive the terminal cursor to point on insert entry (safety net).
 On a different row, snap point back to the cursor instead — up/down arrows
-would be read as shell history navigation."
-  (when (and (derived-mode-p 'ghostel-mode)
-             (meow-ghostel--active-p))
-    (let ((trow (cdr ghostel--cursor-pos))
-          (erow (or (meow-ghostel--point-viewport-row) 0)))
-      (if (equal erow trow)
-          (meow-ghostel-goto-input-position (point))
-        (meow-ghostel--reset-cursor-point)))))
+would be read as shell history navigation.
+Insert entry first leaves copy or Emacs mode."
+  (when (derived-mode-p 'ghostel-mode)
+    (meow-ghostel--exit-readonly)
+    (when (meow-ghostel--active-p)
+      (let ((trow (cdr ghostel--cursor-pos))
+            (erow (or (meow-ghostel--point-viewport-row) 0)))
+        (if (equal erow trow)
+            (meow-ghostel-goto-input-position (point))
+          (meow-ghostel--reset-cursor-point))))))
+
+(defun meow-ghostel--readonly-enter ()
+  "Leave insert state so motion keys browse the read-only buffer.
+On `ghostel-readonly-enter-hook'.  Insert state binds no printable keys,
+so they would reach ghostel's fast-exit map, leave the read-only mode,
+and type into the terminal."
+  (when (meow-insert-mode-p)
+    ;; Leaving insert state selects from `meow--insert-pos' to point,
+    ;; which would move the mark of the mouse selection or search
+    ;; landing that brought the buffer here.
+    (setq-local meow--insert-pos nil)
+    (meow--switch-state 'normal)))
+
+(defconst meow-ghostel--switch-hooks
+  '(meow-normal-mode-hook meow-motion-mode-hook)
+  "Hooks running `meow-ghostel--sync-readonly-switches'.
+A state's mode hook runs on entering and on leaving it, which covers
+every switch into and out of the two browsing states.")
+
+(defun meow-ghostel--sync-readonly-switches ()
+  "Keep prompt jumps and search landings in semi-char in normal/motion state.
+These states browse the buffer themselves, and the PTY-routed commands
+act only in semi-char.  Other states keep ghostel's switches."
+  (if (or (meow-normal-mode-p) (meow-motion-mode-p))
+      (setq-local ghostel-prompt-navigation-input-mode nil
+                  ghostel-point-leave-input-mode nil)
+    (kill-local-variable 'ghostel-prompt-navigation-input-mode)
+    (kill-local-variable 'ghostel-point-leave-input-mode)))
 
 
 ;; Input region: boundaries on the cursor row.  ghostel core provides the
@@ -548,7 +594,10 @@ Installed as the buffer-local `meow--kbd-back-to-indentation' target."
 (defun meow-ghostel--open-below (fallback)
   "Enter insert state at the end of input; elsewhere run FALLBACK.
 Never runs the vanilla command in semi-char: its RET keyboard macro
-resolves through ghostel's map to the PTY, executing the command line."
+resolves through ghostel's map to the PTY, executing the command line.
+Copy and Emacs mode are left first; their RET binding sends it too."
+  (unless meow--temp-normal
+    (meow-ghostel--exit-readonly))
   (cond
    ((and (meow-ghostel--active-p) (not meow--temp-normal))
     (meow--cancel-selection)
@@ -577,7 +626,10 @@ macro directly rather than through `meow-open-below'."
 (defun meow-ghostel--open-above (fallback)
   "Enter insert state at the start of input; elsewhere run FALLBACK.
 Never runs the vanilla command in semi-char: its `newline' lands in the
-render, which ghostel forwards to the shell as a stray continuation line."
+render, which ghostel forwards to the shell as a stray continuation line.
+Copy and Emacs mode are left first."
+  (unless meow--temp-normal
+    (meow-ghostel--exit-readonly))
   (cond
    ((and (meow-ghostel--active-p) (not meow--temp-normal))
     (meow--cancel-selection)
@@ -1096,6 +1148,11 @@ Enabling installs global advice while any buffer has the mode enabled."
         ;; buffer to copy mode before the PTY-aware commands can run.
         ;; Mouse selection stays governed by `ghostel-mouse-drag-input-mode'.
         (setq-local ghostel-mark-activation-input-mode nil)
+        (dolist (hook meow-ghostel--switch-hooks)
+          (add-hook hook #'meow-ghostel--sync-readonly-switches nil t))
+        (meow-ghostel--sync-readonly-switches)
+        (add-hook 'ghostel-readonly-enter-hook
+                  #'meow-ghostel--readonly-enter nil t)
         (meow-ghostel--install-word-boundaries)
         (dolist (override meow-ghostel--kbd-overrides)
           (set (make-local-variable (car override))
@@ -1116,7 +1173,13 @@ Enabling installs global advice while any buffer has the mode enabled."
                  #'meow-ghostel--insert-enter t)
     (remove-hook 'ghostel-inhibit-anchor-functions
                  #'meow-ghostel--anchor-inhibit t)
+    (remove-hook 'ghostel-readonly-enter-hook
+                 #'meow-ghostel--readonly-enter t)
+    (dolist (hook meow-ghostel--switch-hooks)
+      (remove-hook hook #'meow-ghostel--sync-readonly-switches t))
     (kill-local-variable 'ghostel-mark-activation-input-mode)
+    (kill-local-variable 'ghostel-prompt-navigation-input-mode)
+    (kill-local-variable 'ghostel-point-leave-input-mode)
     (meow-ghostel--restore-word-boundaries)
     (dolist (override meow-ghostel--kbd-overrides)
       (kill-local-variable (car override)))

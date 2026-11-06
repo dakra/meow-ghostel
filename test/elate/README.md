@@ -40,6 +40,12 @@ output — so the shell/REPL itself proves the edit landed.
 - `matrix/meow-python3.json` — the REPL, kept separate because it has no `echo` and
   PyREPL editing doesn't word-split cleanly (word-heavy ops omitted). Its `x i`
   covers the regexp-detected prompt.
+- `matrix/meow-readonly.json` — copy and Emacs mode across the meow states, on zsh:
+  normal-state prompt jumps and isearch landings stay in semi-char; insert entry
+  (`i`, `a`, `A`, `I`) leaves the read-only mode, `i` keeping point's column on the
+  cursor row but not inside the prompt; entering copy mode from insert state lands in normal
+  state. `A` fails loudly if `meow-open-below` reaches copy mode's RET binding, which
+  executes the command line as typed.
 - `matrix/meow-compile.json` — `ghostel-compile` with `compilation-scroll-output` nil:
   point stays parked at the top in insert state while the run is live.
 - `matrix/meow-boundary-<shell>-ghostel.json` — the input-region boundary suite
@@ -64,6 +70,7 @@ elate run --keep-going --format json --set shell=/opt/homebrew/bin/nu   --set ec
 
 elate run --keep-going --format json test/elate/matrix/meow-python3.json
 elate run --keep-going --format json test/elate/matrix/meow-compile.json
+elate run --keep-going --format json test/elate/matrix/meow-readonly.json
 for s in bash zsh fish nu; do
   elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
 ```

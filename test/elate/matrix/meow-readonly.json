@@ -1,0 +1,434 @@
+{
+  "name": "meow-ghostel-readonly",
+  "comment": "Read-only input modes under meow-ghostel. Normal-state prompt jumps and search landings stay in semi-char; entering insert state from copy or Emacs mode (including Emacs -> copy nesting) returns to the terminal, keeping point's column on the cursor row but not inside the prompt; entering copy mode from insert state (C-c C-t, isearch) lands in normal state so motions browse the frozen buffer; a cursor that moved rows during a copy-mode freeze is handled on insert entry; the open commands leave copy mode instead of running their vanilla RET / newline. The shell's output is the oracle. Driven on zsh.",
+  "session": {
+    "ui": "tty",
+    "size": "100x30",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/src/dakra/meow-ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/zsh\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow",
+      "ELATE_GHOSTEL_DIR": "/Users/daniel/.emacs.d/lib/ghostel"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "prompt",
+      "comment": "short prompt, a few commands so there are earlier prompts to jump to"
+    },
+    {
+      "type": "PROMPT='> '; RPROMPT=''"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 10.0
+    },
+    {
+      "type": "echo r01"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^r01$",
+      "timeout": 8.0
+    },
+    {
+      "type": "echo r02"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^r02$",
+      "timeout": 8.0
+    },
+    {
+      "group": "prompt-nav",
+      "comment": "normal-state prompt jump keeps semi-char; a (off the cursor row) types at the live prompt"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "<escape> M-x ghostel-previous-prompt RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(when (= (point) ghostel--cursor-char-pos) (error \"NO JUMP\"))"
+    },
+    {
+      "keys": "k k a"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "type": "echo m01ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m01ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "copy-insert",
+      "comment": "explicit copy mode, point off the cursor row, i: exits and lands on the cursor"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "<escape> C-c C-t"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'copy) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "keys": "k i"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"POINT %d cursor %d\" (point) ghostel--cursor-char-pos))"
+    },
+    {
+      "type": "echo m02ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m02ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "nested-insert",
+      "comment": "Emacs mode -> copy mode -> i leaves read-only mode entirely"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "<escape> C-c C-e C-c C-t"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'copy) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(when buffer-read-only (error \"READ-ONLY\"))"
+    },
+    {
+      "type": "echo m03ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m03ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "column-keep",
+      "comment": "copy mode, b onto `world', i X: the terminal cursor follows point's column"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "type": "echo hello world"
+    },
+    {
+      "keys": "<escape> C-c C-t b i"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "type": "X"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^hello Xworld$",
+      "timeout": 8.0
+    },
+    {
+      "group": "clamp",
+      "comment": "copy mode, x i puts point at the line start inside the prompt; insert entry clamps it to the input start"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "type": "m05ok"
+    },
+    {
+      "keys": "<escape> C-c C-t x i"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(unless (= (point) (ghostel-input-start-point)) (error \"POINT %d input-start %d\" (point) (ghostel-input-start-point)))"
+    },
+    {
+      "type": "echo "
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m05ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "search",
+      "comment": "normal-state isearch lands off the cursor and stays semi-char"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "<escape> M-x isearch-backward RET r 0 1 RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(when (= (point) ghostel--cursor-char-pos) (error \"NO JUMP\"))"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "echo m07ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m07ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "insert-isearch",
+      "comment": "insert-state isearch enters copy mode in normal state; k browses, i returns to the prompt"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "M-x isearch-backward RET r 0 1 RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (and (eq ghostel--input-mode 'copy) (meow-normal-mode-p)) (error \"MODE %s STATE %s\" ghostel--input-mode (meow--current-state)))"
+    },
+    {
+      "keys": "k"
+    },
+    {
+      "eval": "(unless (and (eq ghostel--input-mode 'copy) (meow-normal-mode-p)) (error \"MODE %s STATE %s\" ghostel--input-mode (meow--current-state)))"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "echo m08ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m08ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "copy-from-insert",
+      "comment": "C-c C-t in insert state lands in normal state; k k stay in copy mode, C-c C-t exits, a types at the prompt"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "keys": "C-c C-t"
+    },
+    {
+      "eval": "(unless (and (eq ghostel--input-mode 'copy) (meow-normal-mode-p)) (error \"MODE %s STATE %s\" ghostel--input-mode (meow--current-state)))"
+    },
+    {
+      "keys": "k k"
+    },
+    {
+      "eval": "(unless (and (eq ghostel--input-mode 'copy) (meow-normal-mode-p)) (error \"MODE %s STATE %s\" ghostel--input-mode (meow--current-state)))"
+    },
+    {
+      "keys": "C-c C-t"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "keys": "a"
+    },
+    {
+      "type": "echo m10ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m10ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "freeze-then-insert",
+      "comment": "output arrives while copy mode is frozen, moving the cursor rows down; i must still type at the new prompt"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "type": "sleep 1; echo late9"
+    },
+    {
+      "keys": "RET <escape> C-c C-t"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'copy) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 2.5,
+      "timeout": 10.0
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^late9$",
+      "timeout": 8.0
+    },
+    {
+      "type": "echo m09ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m09ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "A-from-copy",
+      "comment": "A (open-below) in copy mode leaves it and appends at the input end; the vanilla RET macro would execute the unfinished line"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "type": "echo m11"
+    },
+    {
+      "keys": "<escape> C-c C-t k A"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "type": "ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m11ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "I-from-copy",
+      "comment": "I (open-above) in copy mode leaves it and inserts at the input start"
+    },
+    {
+      "eval": "(progn (when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit)) (meow--switch-state 'insert))"
+    },
+    {
+      "type": "m12ok"
+    },
+    {
+      "keys": "<escape> C-c C-t k I"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "type": "echo "
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m12ok$",
+      "timeout": 8.0
+    }
+  ]
+}

@@ -313,11 +313,204 @@ mode before the PTY-aware commands can run."
          (should copied))))))
 
 (ert-deftest meow-ghostel-test-disable-restores-mark-activation ()
-  "Disabling `meow-ghostel-mode' restores ghostel's mark-activation behavior."
+  "Disabling `meow-ghostel-mode' restores ghostel's read-only mode switches."
   (meow-ghostel-test--with-meow-buffer
-   (should (local-variable-p 'ghostel-mark-activation-input-mode))
-   (meow-ghostel-mode -1)
-   (should-not (local-variable-p 'ghostel-mark-activation-input-mode))))
+   (meow--switch-state 'normal)
+   (let ((vars '(ghostel-mark-activation-input-mode
+                 ghostel-prompt-navigation-input-mode
+                 ghostel-point-leave-input-mode)))
+     (dolist (var vars)
+       (should (local-variable-p var))
+       (should-not (symbol-value var)))
+     (meow-ghostel-mode -1)
+     (dolist (var vars)
+       (should-not (local-variable-p var)))
+     (meow--switch-state 'insert)
+     (meow--switch-state 'normal)
+     (should-not (local-variable-p 'ghostel-point-leave-input-mode)))))
+
+;; -----------------------------------------------------------------------
+;; Test: read-only input modes (copy / Emacs mode)
+;; -----------------------------------------------------------------------
+
+(defmacro meow-ghostel-test--with-readonly-fixture (&rest body)
+  "Run BODY in normal state in a mock buffer holding \"$ echo hello\".
+The cursor is at column 2; `sent' collects the keys sent to the terminal."
+  (declare (indent 0) (debug t))
+  `(meow-ghostel-test--with-meow-buffer
+    (insert "$ echo hello")
+    (let ((sent nil))
+      (ignore sent)
+      (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                ((symbol-function 'ghostel--anchor-window) #'ignore)
+                ((symbol-function 'ghostel-force-redraw) #'ignore)
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore)
+                ((symbol-function 'ghostel--send-encoded)
+                 (lambda (key &rest _) (push key sent)))
+                (ghostel--cursor-pos '(2 . 0)))
+        (meow--switch-state 'normal)
+        ,@body))))
+
+(ert-deftest meow-ghostel-test-readonly-switches-follow-state ()
+  "Only normal and motion state keep prompt jumps and landings in semi-char."
+  (meow-ghostel-test--with-meow-buffer
+   (dolist (state '(insert normal insert motion keypad normal))
+     (meow--switch-state state)
+     (let ((browsing (and (memq state '(normal motion)) t)))
+       (should (eq browsing (local-variable-p
+                             'ghostel-prompt-navigation-input-mode)))
+       (should (eq browsing (local-variable-p
+                             'ghostel-point-leave-input-mode)))))
+   (meow-mode -1)
+   (should-not (local-variable-p 'ghostel-point-leave-input-mode))))
+
+(ert-deftest meow-ghostel-test-insert-entry-exits-read-only-mode ()
+  "Insert-state entry leaves every read-only mode for the pre-read-only mode."
+  (dolist (enter '((ghostel-copy-mode)
+                   (ghostel-emacs-mode)
+                   (ghostel-emacs-mode ghostel-copy-mode)))
+    (meow-ghostel-test--with-readonly-fixture
+      (mapc #'funcall enter)
+      (should (memq ghostel--input-mode '(copy emacs)))
+      (call-interactively #'meow-ghostel-insert)
+      (should (meow-insert-mode-p))
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-keeps-column ()
+  "Insert entry from copy mode drives the cursor to point's column."
+  (meow-ghostel-test--with-readonly-fixture
+    (ghostel-copy-mode)
+    (move-to-column 7)
+    (call-interactively #'meow-ghostel-insert)
+    (should (eq ghostel--input-mode 'semi-char))
+    (should (equal sent (make-list 5 "right")))))
+
+(ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-clamps-to-input ()
+  "A kept column inside the prompt moves to the input start."
+  (meow-ghostel-test--with-readonly-fixture
+    (setq-local ghostel--cursor-char-pos 3)
+    (ghostel-copy-mode)
+    (move-to-column 1)
+    (call-interactively #'meow-ghostel-insert)
+    (should (= (point) 3))
+    (should-not sent)))
+
+(ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-no-prompt-keeps-column ()
+  "Without a detected prompt the kept column is not clamped to the cursor."
+  (meow-ghostel-test--with-readonly-fixture
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (erase-buffer)
+      (insert "long-wrapped tail"))
+    (setq-local ghostel--cursor-char-pos 18)
+    (cl-letf ((ghostel--cursor-pos '(17 . 0)))
+      (ghostel-copy-mode)
+      (move-to-column 3)
+      (call-interactively #'meow-ghostel-insert)
+      (should (equal sent (make-list 14 "left"))))))
+
+(ert-deftest meow-ghostel-test-insert-entry-from-copy-mode-off-row ()
+  "Off the cursor row, insert entry from copy mode lands on the cursor."
+  (meow-ghostel-test--with-readonly-fixture
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (goto-char (point-min))
+      (insert "old output\n"))
+    (cl-letf ((ghostel--cursor-pos '(2 . 1)))
+      (ghostel-copy-mode)
+      (goto-char (point-min))
+      (call-interactively #'meow-ghostel-insert)
+      (should (eq ghostel--input-mode 'semi-char))
+      (should (equal (cons (current-column) (1- (line-number-at-pos)))
+                     ghostel--cursor-pos))
+      (should-not sent))))
+
+(ert-deftest meow-ghostel-test-search-landing-stays-semi-char ()
+  "Point leaving the input keeps semi-char in normal state, not in insert."
+  (meow-ghostel-test--with-readonly-fixture
+    (setq-local ghostel--cursor-char-pos 3)
+    (goto-char 8)
+    (ghostel-maybe-leave-input)
+    (should (eq ghostel--input-mode 'semi-char))
+    (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+      (meow--switch-state 'insert))
+    (goto-char 8)
+    (ghostel-maybe-leave-input)
+    (should (eq ghostel--input-mode 'copy))
+    (should (meow-normal-mode-p))))
+
+(ert-deftest meow-ghostel-test-prompt-navigation-stays-semi-char ()
+  "Prompt jumps keep semi-char in normal state; from insert, enter copy mode."
+  (meow-ghostel-test--with-readonly-fixture
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (erase-buffer)
+      (insert (propertize "$ " 'ghostel-prompt t) "ls\nfoo\n"
+              (propertize "$ " 'ghostel-prompt t)))
+    (ghostel-previous-prompt)
+    (should (= (point) 3))
+    (should (eq ghostel--input-mode 'semi-char))
+    (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+      (meow--switch-state 'insert))
+    (ghostel-next-prompt)
+    (should (eq ghostel--input-mode 'copy))
+    (should (meow-normal-mode-p))))
+
+(ert-deftest meow-ghostel-test-readonly-entry-leaves-insert-state ()
+  "Entering a read-only mode from insert state lands in normal state."
+  (dolist (enter '(ghostel-copy-mode ghostel-emacs-mode))
+    (meow-ghostel-test--with-readonly-fixture
+      (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+        (meow--switch-state 'insert))
+      (funcall enter)
+      (should (memq ghostel--input-mode '(copy emacs)))
+      (should (meow-normal-mode-p))))
+  (meow-ghostel-test--with-readonly-fixture
+    (meow--switch-state 'motion)
+    (ghostel-copy-mode)
+    (should (meow-motion-mode-p))))
+
+(ert-deftest meow-ghostel-test-readonly-entry-keeps-region ()
+  "Entering copy mode from insert state keeps the region that triggered it.
+Leaving insert state would otherwise select from `meow--insert-pos'."
+  (meow-ghostel-test--with-readonly-fixture
+    (cl-letf (((symbol-function 'meow-ghostel--insert-enter) #'ignore))
+      (meow--switch-state 'insert))
+    (setq-local meow--insert-pos 13)
+    (let ((meow-select-on-insert t)
+          (meow-select-on-append t)
+          (meow-select-on-change t))
+      (goto-char 8)
+      (push-mark 3 t t)
+      (ghostel-copy-mode)
+      (should (meow-normal-mode-p))
+      (should (= 3 (mark t)))
+      (should (= 8 (point))))))
+
+(ert-deftest meow-ghostel-test-open-from-copy-mode-leaves-it ()
+  "The open commands leave copy mode and target the input edges.
+The vanilla commands must not run there: after insert entry has left
+copy mode, `meow-open-below' sends RET and `meow-open-above' a newline."
+  (dolist (case '((meow-ghostel-open-below meow-open-below 13)
+                  (meow-ghostel-open-below-visual meow-open-below-visual 13)
+                  (meow-ghostel-open-above meow-open-above 3)
+                  (meow-ghostel-open-above-visual meow-open-above-visual 3)))
+    (meow-ghostel-test--with-readonly-fixture
+      (setq-local ghostel--cursor-char-pos 13)
+      (cl-letf ((ghostel--cursor-pos '(12 . 0)))
+        (ghostel-copy-mode)
+        (goto-char 8)
+        (let ((vanilla nil) (target nil))
+          (cl-letf (((symbol-function (nth 1 case))
+                     (lambda (&rest _) (interactive) (setq vanilla t)))
+                    ((symbol-function 'meow-ghostel-goto-input-position)
+                     (lambda (pos &rest _) (setq target pos) (goto-char pos) t)))
+            (call-interactively (nth 0 case)))
+          (should-not vanilla)
+          (should (eq ghostel--input-mode 'semi-char))
+          (should (meow-insert-mode-p))
+          (should (= (nth 2 case) target))
+          (should-not (member "return" sent)))))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: vim-style word boundaries
@@ -1216,9 +1409,9 @@ map to the PTY, executing the current command line."
       (should (meow-insert-mode-p)))))
 
 (ert-deftest meow-ghostel-test-open-visual-remaps-fall-through ()
-  "Outside semi-char the visual remaps defer to their vanilla commands."
+  "In char mode the visual remaps defer to their vanilla commands."
   (meow-ghostel-test--with-input-fixture "$ " "hello"
-    (setq-local ghostel--input-mode 'copy)
+    (setq-local ghostel--input-mode 'char)
     (dolist (pair '((meow-ghostel-open-above-visual . meow-open-above-visual)
                     (meow-ghostel-open-below-visual . meow-open-below-visual)))
       (let ((called nil))

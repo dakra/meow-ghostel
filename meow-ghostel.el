@@ -5,6 +5,7 @@
 ;; Author: Daniel Kraus <daniel@kraus.my>
 ;; URL: https://github.com/dakra/meow-ghostel
 ;; Version: 0.1.0
+;; Keywords: convenience terminals
 ;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.61.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 

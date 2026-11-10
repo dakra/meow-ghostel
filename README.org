@@ -1,17 +1,21 @@
 #+title: meow-ghostel - Meow integration for the Ghostel terminal
 #+author: Daniel Kraus
 
-[[https://github.com/meow-edit/meow][Meow]] modal-editing integration for the [[https://github.com/dakra/ghostel][Ghostel]] terminal emulator.
+[[https://github.com/meow-edit/meow][Meow]] modal editing for the [[https://github.com/dakra/ghostel][Ghostel]] terminal emulator: select with your
+usual meow motions, then kill, change, replace, yank, or undo on the
+shell's command line.
 
-The Ghostel buffer is a read-only render of the terminal grid, so meow's
-editing commands cannot modify it directly.  =meow-ghostel= instead routes
-them through the terminal: the selection-based editing commands (kill,
-change, replace, yank, undo) clamp their range to the typed input and
-apply it over the PTY — arrow keys, backspaces, and bracketed paste drive
-the shell's own line editor (readline / zle / fish).  Selection motions
-stay vanilla meow; point and region move freely over the rendered rows.
+A Ghostel buffer is a read-only render of the terminal, and the text at
+the prompt belongs to the shell, so meow's editing commands cannot modify
+it directly.  =meow-ghostel-mode= sends each edit to the shell's own line
+editor (readline, zle, fish, …) as cursor movement, backspaces, and
+bracketed paste.  Motions and selections work over the whole buffer,
+scrollback included, so output can be selected and copied like any other
+text.
 
 * Installation
+
+Requires Emacs 28.1, meow 1.5.0, and Ghostel 0.61.0, or later.
 
 From MELPA:
 
@@ -31,19 +35,49 @@ Or from source (Emacs 30+):
   :hook (ghostel-mode . meow-ghostel-mode))
 #+end_src
 
-* What it does
+* Usage
 
-Key names below refer to meow's suggested qwerty layout; the integration
-remaps the =meow-*= commands (never literal keys), so any layout works.
+Meow ships no default keybindings; the keys below are those of meow's
+suggested qwerty layout.  The mode remaps the =meow-*= commands, never
+literal keys, so it follows whatever your =meow-setup= binds.
 
-- Ghostel starts in *INSERT state* (terminal input works normally); ESC
-  enters normal state.
-- Selection motions (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =x=, ...) move point and select
-  freely over the rendered rows; =j= stops at the live prompt row and
-  navigation in scrollback isn't yanked back by streaming output.  Outside
-  insert state a selection stays active when the terminal repaints its
-  rows (a prompt that redraws itself, output arriving on the selected
-  lines); alt-screen programs still clear it.
+A Ghostel buffer starts in *insert state*, where every key goes to the
+terminal.  =ESC= switches to normal state; =i= or =a= returns to typing.
+
+For example, to fix the typo in =echo hello wrold= before running it:
+=ESC= =b= selects =wrold=, =c= deletes it and enters insert state, then type
+=world= and press =RET=.
+
+| Keys                              | Command                                | In a Ghostel buffer                                       |
+|-----------------------------------+----------------------------------------+-----------------------------------------------------------|
+| =h= =j= =k= =l= =w= =b= =e= =x= … | motions                                | Move and select anywhere in the buffer                    |
+| =y=                               | =meow-save=                            | Copy the selection                                        |
+| =s=                               | =meow-kill=                            | Kill the selection; without one, kill to the end of input |
+| =c=                               | =meow-change=                          | Delete the selection and enter insert state               |
+| =r=                               | =meow-replace=                         | Replace the selection with the last kill                  |
+| =d= / =D=                         | =meow-delete= / =meow-backward-delete= | Delete the character at / before point                    |
+| =p=                               | =meow-yank=                            | Paste at point                                            |
+| =u=                               | =meow-undo=                            | Undo in the shell (=Ctrl+_=)                              |
+| =i= / =a=                         | =meow-insert= / =meow-append=          | Move the shell cursor to point and enter insert state     |
+| =I= / =A=                         | =meow-open-above= / =meow-open-below=  | Enter insert state at the start / end of the input        |
+
+Edits apply to the typed input only: a selection that reaches into the
+prompt or the scrollback is clamped to it.  Killed text lands on the kill
+ring as usual.
+
+In full-screen programs (vim, less, htop) every command falls through to
+vanilla meow and =ESC= goes to the program.
+
+Bind =ghostel-previous-prompt= / =ghostel-next-prompt= in your =meow-setup= if
+you want prompt navigation.
+
+* Details
+
+- *Motions* move point and select freely over the rendered rows; =j= stops
+  at the live prompt row, and navigation in scrollback isn't yanked back
+  by streaming output.  Outside insert state a selection stays active when
+  the terminal repaints its rows (a prompt that redraws itself, output
+  arriving on the selected lines); alt-screen programs still clear it.
 - *Word boundaries* are Vim-style: =w=, =b=, =e= and =meow-mark-word= stop at
   path components (=bar= in =~/src/foo/bar.txt=), while the symbol commands
   (=W=, =B=, =E=, =meow-mark-symbol=) span the whole path; =e=/=b= selections
@@ -52,30 +86,23 @@ remaps the =meow-*= commands (never literal keys), so any layout works.
   other syntax-based word commands see components too while the mode is on;
   set =meow-ghostel-word-boundaries= to =nil= to keep Ghostel's path-aware
   words.
-- *Kill/change/replace* (=s=, =c=, =r=) clamp the selection to the typed input
-  and apply it via the shell (backspaces + bracketed paste); the killed
-  text still lands on the kill ring.  =s= without a selection kills to the
-  end of input.
-- *Insert/append/open* (=i=, =a=, =I=, =A=) drive the shell cursor to the target
-  before entering insert state; =A=/=I= go to the end/start of input (a
-  terminal has no "open line").
-- *Yank* (=p=) pastes at point via bracketed paste; *undo* (=u=) sends
-  readline undo (=Ctrl+_=).
-- Autosuggestions (zsh-autosuggestions, fish, nu/reedline hints) are never
+- *Insert/append/open*: =A=/=I= go to the end/start of input because a
+  terminal has no "open line".
+- *Autosuggestions* (zsh-autosuggestions, fish, nu/reedline hints) are never
   accepted by accident: rightward motion and appends stop at the typed
   input end, detected by the suggestion's color.
-- =SPC= (keypad/leader) works as usual in normal state; in insert state it
-  types into the terminal.
-- Insert-state Ctrl keys reach the shell through Ghostel's own semi-char
+- *Keypad*: =SPC= (keypad/leader) works as usual in normal state; in insert
+  state it types into the terminal.
+- *Insert-state Ctrl keys* reach the shell through Ghostel's own semi-char
   map (no extra passthrough layer), so =ghostel-keymap-exceptions= applies
   as-is: =C-u= stays =universal-argument= (remove it from the exceptions if
   you want readline kill-line).
-- Alt-screen programs (vim, less, htop) are unaffected: every command
+- *Alt-screen programs* (vim, less, htop) are unaffected: every command
   falls through to vanilla =meow-*= there, and ESC routing follows
   =meow-ghostel-escape=.
-- Outside semi-char input mode (Ghostel's =line= / =copy= / =emacs= / =char=
-  modes) commands fall through to vanilla meow as well; in line mode the
-  input is plain buffer text, so meow edits it directly.
+- *Input modes*: outside semi-char input mode (Ghostel's =line= / =copy= /
+  =emacs= / =char= modes) commands fall through to vanilla meow as well; in
+  line mode the input is plain buffer text, so meow edits it directly.
 - *Copy and Emacs mode* cooperate with the meow states.  Entering one from
   insert state switches to normal state, so motion keys browse the buffer
   instead of leaving the mode and typing into the terminal.  Entering
@@ -85,14 +112,16 @@ remaps the =meow-*= commands (never literal keys), so any layout works.
   =ghostel-prompt-navigation-input-mode= and =ghostel-point-leave-input-mode=
   are =nil= buffer-locally.
 
-Not supported: BEACON state (its commands edit the buffer directly, but the
-terminal render owns that text, so the edits reach the shell at the terminal
-cursor rather than at each beacon), =meow-yank-pop= (a terminal echo cannot
-be swapped out; it signals a =user-error=), =meow-comment= (likewise a
-=user-error=; its =M-;= keyboard macro would type bytes into the shell), and
-redo.  Bind
-=ghostel-previous-prompt= / =ghostel-next-prompt= in your =meow-setup= if you
-want prompt navigation.
+* Limitations
+
+- *BEACON state*: its commands edit the buffer directly, but the terminal
+  render owns that text, so the edits reach the shell at the terminal
+  cursor rather than at each beacon.
+- =meow-yank-pop= signals a =user-error=: a terminal echo cannot be swapped
+  out.
+- =meow-comment= signals a =user-error=: its =M-;= keyboard macro would type
+  bytes into the shell.
+- There is no redo.
 
 * Customization
 

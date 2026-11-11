@@ -55,6 +55,15 @@ output — so the shell/REPL itself proves the edit landed.
   bash/zsh/fish/nu: `x a` (select line + append) exercises the autosuggestion clamp
   through the region-end path, `A` (open-below) through the input-end target,
   `x s` must not eat the right prompt.
+- `matrix/meow-tracking.json` — normal-state point tracking across streamed output, on
+  zsh: point parked at the cursor follows it through a stream and a single-frame burst;
+  point elsewhere on or below the cursor's row keeps its column and row offset while the
+  window stays anchored; point above the row stays put. The `tui-*` groups drive
+  `lib/inline-tui.sh`, an inline program with three static rows
+  below its input row.
+- `matrix/meow-line-mode.json` — line mode under an app that draws a grey suggestion
+  after the input, on zsh: a selection into the suggestion, kill-word at the input end,
+  `x s` and `x c` edit only the input, leaving the read-only prompt and suggestion.
 
 ## Running (elate 0.11.0+)
 
@@ -74,6 +83,8 @@ elate run --keep-going --format json test/elate/matrix/meow-python3.json
 elate run --keep-going --format json test/elate/matrix/meow-compile.json
 elate run --keep-going --format json test/elate/matrix/meow-readonly.json
 elate run --keep-going --format json test/elate/matrix/meow-repaint-zsh.json
+elate run --keep-going --format json test/elate/matrix/meow-tracking.json
+elate run --keep-going --format json test/elate/matrix/meow-line-mode.json
 for s in bash zsh fish nu; do
   elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
 ```
@@ -90,9 +101,9 @@ elate run --keep-going --format json --set shell=$PWD/test/elate/lib/fish-no-mar
   --set 'setup=function fish_prompt; echo -n "> "; end; function fish_right_prompt; end' "$S"
 ```
 
-Three groups fail there by design, all of which need the input start: `I`,
-`N-open-above-visual` and `x-i`. Every other group must pass: with the input start
-unknown, kills and leftward moves stay unclamped.
+Two groups fail there by design, both of which need the input start: `I` and
+`N-open-above-visual`. Every other group must pass: with the input start unknown,
+kills and leftward moves stay unclamped.
 
 Each run's JSON carries a `groups[]` array (`name` + `status` = `PASS`/`FAIL`/`XFAIL`/
 `XPASS`). The run exits non-zero on any genuine `FAIL` or `XPASS` (`xfail` is

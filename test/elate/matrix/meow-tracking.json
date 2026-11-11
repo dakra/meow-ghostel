@@ -1,0 +1,315 @@
+{
+  "name": "meow-ghostel-tracking",
+  "comment": "Normal-state point tracking across streamed output (ghostel #802). Point parked at the live cursor follows it across a line-at-a-time stream and a single-frame burst; point elsewhere on or below the cursor's row keeps its column and row offset while the window stays anchored; point above the cursor's row stays put; tracking re-engages after roaming. The tui groups drive lib/inline-tui.sh, an inline program with three static rows below its input row. Driven on zsh.",
+  "session": {
+    "ui": "tty",
+    "size": "100x30",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/src/dakra/meow-ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/zsh\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow",
+      "ELATE_GHOSTEL_DIR": "/Users/daniel/.emacs.d/lib/ghostel"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "prompt",
+      "comment": "short prompt"
+    },
+    {
+      "type": "PROMPT='> '; RPROMPT=''"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "parked-stream",
+      "comment": "ESC during the sleep, then a line-at-a-time stream: point rides the cursor to the new prompt"
+    },
+    {
+      "type": "sleep 2 && for i in {1..30}; do echo s-$i; sleep 0.05; done"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.3,
+      "timeout": 3.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "wait": "text",
+      "pattern": "^s-30$",
+      "timeout": 20.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.8,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (meow-normal-mode-p) (error \"STATE %s\" meow--current-state))"
+    },
+    {
+      "eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "group": "parked-burst",
+      "comment": "the whole burst lands in one redraw: tracking must not latch off"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "sleep 2 && seq 1 200"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.3,
+      "timeout": 3.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "wait": "text",
+      "pattern": "^200$",
+      "timeout": 25.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.8,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "group": "roamed-burst",
+      "comment": "k k k during the sleep: point above the cursor's row stays where the user moved it"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "sleep 2 && seq 1 300"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.3,
+      "timeout": 3.0
+    },
+    {
+      "keys": "<escape> k k k"
+    },
+    {
+      "eval": "(progn (meow--cancel-selection) (setq meow-ghostel-elate--roam (point)))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^300$",
+      "timeout": 25.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.8,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (= meow-ghostel-elate--roam (point)) (error \"MOVED %d -> %d\" meow-ghostel-elate--roam (point)))"
+    },
+    {
+      "group": "re-engage",
+      "comment": "insert re-parks point on the cursor; tracking engages again after roaming"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "sleep 2 && seq 1 400"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.3,
+      "timeout": 3.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "wait": "text",
+      "pattern": "^400$",
+      "timeout": 25.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.8,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "group": "row-roam",
+      "comment": "column 0 of the cursor's row, then a background burst ending without newline: point rides the row at column 0 and the window follows"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "{ sleep 2; seq 1 450; printf noeol; } &!"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.3,
+      "timeout": 3.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "eval": "(with-selected-window (get-buffer-window) (meow--cancel-selection) (move-to-column 0))"
+    },
+    {
+      "wait": "text",
+      "pattern": "noeol",
+      "timeout": 25.0
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.8,
+      "timeout": 10.0
+    },
+    {
+      "eval": "(unless (= (line-beginning-position) (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) (error \"OFF-ROW point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"
+    },
+    {
+      "eval": "(unless (ghostel--window-anchored-p (get-buffer-window)) (error \"UNANCHORED start=%d\" (window-start (get-buffer-window))))"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "tui-row-roam",
+      "comment": "inline TUI with three rows below the cursor: point elsewhere on the cursor's row rides it through 60 scrolled frames"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "sh /Users/daniel/src/dakra/meow-ghostel/test/elate/lib/inline-tui.sh rr 60"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^> in-rr",
+      "timeout": 5.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "eval": "(with-selected-window (get-buffer-window) (meow--cancel-selection) (goto-char ghostel--cursor-char-pos) (move-to-column 0))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^rr-60$",
+      "timeout": 20.0
+    },
+    {
+      "eval": "(unless (= (line-beginning-position) (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) (error \"OFF-ROW point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"
+    },
+    {
+      "eval": "(unless (ghostel--window-anchored-p (get-buffer-window)) (error \"UNANCHORED start=%d\" (window-start (get-buffer-window))))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^rr-done$",
+      "timeout": 10.0
+    },
+    {
+      "group": "tui-below",
+      "comment": "point two rows below the cursor keeps its row offset and column through 60 scrolled frames"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "sh /Users/daniel/src/dakra/meow-ghostel/test/elate/lib/inline-tui.sh bb 60"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^> in-bb",
+      "timeout": 5.0
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "eval": "(with-selected-window (get-buffer-window) (meow--cancel-selection) (goto-char ghostel--cursor-char-pos) (forward-line 2) (move-to-column 3))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^bb-60$",
+      "timeout": 20.0
+    },
+    {
+      "eval": "(unless (looking-at-p \"tus-2\") (error \"MOVED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "eval": "(unless (= 2 (count-lines (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position)) (line-beginning-position))) (error \"OFFSET point=l%d cursor=l%d\" (line-number-at-pos) (line-number-at-pos ghostel--cursor-char-pos)))"
+    },
+    {
+      "eval": "(unless (ghostel--window-anchored-p (get-buffer-window)) (error \"UNANCHORED start=%d\" (window-start (get-buffer-window))))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^bb-done$",
+      "timeout": 10.0
+    }
+  ]
+}

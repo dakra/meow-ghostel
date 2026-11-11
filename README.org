@@ -15,7 +15,7 @@ text.
 
 * Installation
 
-Requires Emacs 28.1, meow 1.5.0, and Ghostel 0.61.0, or later.
+Requires Emacs 28.1, meow 1.5.0, and Ghostel 0.64.0, or later.
 
 From MELPA:
 
@@ -75,9 +75,12 @@ you want prompt navigation.
 
 - *Motions* move point and select freely over the rendered rows; =j= stops
   at the live prompt row, and navigation in scrollback isn't yanked back
-  by streaming output.  Outside insert state a selection stays active when
-  the terminal repaints its rows (a prompt that redraws itself, output
-  arriving on the selected lines); alt-screen programs still clear it.
+  by streaming output.  Without a selection, a point on or below the
+  cursor's row follows the output, keeping its column and its row offset
+  from the cursor, so the window keeps showing the live rows.  Outside
+  insert state a selection stays active when the terminal repaints its
+  rows (a prompt that redraws itself, output arriving on the selected
+  lines); alt-screen programs still clear it.
 - *Word boundaries* are Vim-style: =w=, =b=, =e= and =meow-mark-word= stop at
   path components (=bar= in =~/src/foo/bar.txt=), while the symbol commands
   (=W=, =B=, =E=, =meow-mark-symbol=) span the whole path; =e=/=b= selections
@@ -103,6 +106,8 @@ you want prompt navigation.
 - *Input modes*: outside semi-char input mode (Ghostel's =line= / =copy= /
   =emacs= / =char= modes) commands fall through to vanilla meow as well; in
   line mode the input is plain buffer text, so meow edits it directly.
+  Kills, changes and replacements stay inside the input there, off the
+  read-only prompt and the rows a program draws after it.
 - *Copy and Emacs mode* cooperate with the meow states.  Entering one from
   insert state switches to normal state, so motion keys browse the buffer
   instead of leaving the mode and typing into the terminal.  Entering

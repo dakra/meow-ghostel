@@ -1,0 +1,181 @@
+{
+  "name": "meow-ghostel-line-mode",
+  "comment": "meow kills and changes in line mode edit only the input when an app draws a suggestion after it (the row from ghostel's line-suggestion-ghostel.json): the prompt before the input and the text after it are read-only. Driven on zsh, TTY 60x16.",
+  "session": {
+    "ui": "tty",
+    "size": "60x16",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/src/dakra/meow-ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/zsh\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow",
+      "ELATE_GHOSTEL_DIR": "/Users/daniel/.emacs.d/lib/ghostel"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15
+    },
+    {
+      "group": "setup",
+      "comment": "an app row with a grey suggestion after the cursor, then line mode with \"foo bar\" typed"
+    },
+    {
+      "type": "clear; printf '\\033[38;2;153;153;153m\\342\\235\\257\\302\\240\\033[39m\\033[7mT\\033[27m\\033[2mry\\033[22m \\033[2mit\\033[22m\\r\\033[2C'; read x; echo got-$x"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "until",
+      "pred": "(and (save-excursion (goto-char (point-min)) (re-search-forward \"❯.Try it\" nil t)) (= (car ghostel--cursor-pos) 2))",
+      "buffer": "*ghostel*",
+      "timeout": 10
+    },
+    {
+      "keys": "C-c C-l"
+    },
+    {
+      "wait": "until",
+      "pred": "(eq ghostel--input-mode 'line)",
+      "buffer": "*ghostel*",
+      "timeout": 5
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "foo bar"
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "assert": {
+        "eval": "(and (equal (ghostel--line-mode-input-text) \"foo bar\") (meow-normal-mode-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\") (save-excursion (goto-char (point-min)) (re-search-forward \"^❯\" nil t)))",
+        "buffer": "*ghostel*"
+      }
+    },
+    {
+      "group": "kill-into-suggestion",
+      "comment": "s on a selection from `bar' to the end of the row kills only `bar'"
+    },
+    {
+      "eval": "(with-current-buffer \"*ghostel*\" (meow--cancel-selection) (meow--select (meow--make-selection '(expand . char) (+ ghostel--line-input-start 4) (line-end-position)) t))"
+    },
+    {
+      "keys": "s"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "assert": {
+        "eval": "(and (equal (ghostel--line-mode-input-text) \"foo \") (meow-normal-mode-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\") (save-excursion (goto-char (point-min)) (re-search-forward \"^❯\" nil t)))",
+        "buffer": "*ghostel*"
+      }
+    },
+    {
+      "group": "kill-word-at-end",
+      "comment": "C (kill-word) twice from `bar': the second stops at the end of the input"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "type": "bar"
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "eval": "(with-current-buffer \"*ghostel*\" (meow--cancel-selection) (goto-char (+ ghostel--line-input-start 4)))"
+    },
+    {
+      "keys": "C C"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "assert": {
+        "eval": "(and (equal (ghostel--line-mode-input-text) \"foo \") (meow-normal-mode-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\") (save-excursion (goto-char (point-min)) (re-search-forward \"^❯\" nil t)))",
+        "buffer": "*ghostel*"
+      }
+    },
+    {
+      "group": "x-s",
+      "comment": "x s clears the input; the prompt stays and the suggestion shows again"
+    },
+    {
+      "keys": "x s"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "assert": {
+        "eval": "(and (equal (ghostel--line-mode-input-text) \"\") (meow-normal-mode-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\") (not (invisible-p ghostel--line-input-end)) (save-excursion (goto-char (point-min)) (re-search-forward \"^❯\" nil t)))",
+        "buffer": "*ghostel*"
+      }
+    },
+    {
+      "group": "x-c",
+      "comment": "x c replaces the input; sending sends only the input"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "abc"
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "keys": "x c"
+    },
+    {
+      "type": "xyz"
+    },
+    {
+      "keys": "<escape>"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "assert": {
+        "eval": "(and (equal (ghostel--line-mode-input-text) \"xyz\") (meow-normal-mode-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\") (save-excursion (goto-char (point-min)) (re-search-forward \"^❯\" nil t)))",
+        "buffer": "*ghostel*"
+      }
+    },
+    {
+      "eval": "(with-current-buffer \"*ghostel*\" (ghostel-line-mode-send))"
+    },
+    {
+      "wait": "text",
+      "pattern": "^got-xyz$",
+      "buffer": "*ghostel*",
+      "timeout": 10
+    }
+  ]
+}

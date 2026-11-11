@@ -6,7 +6,7 @@
 ;; URL: https://github.com/dakra/meow-ghostel
 ;; Version: 0.1.0
 ;; Keywords: convenience terminals
-;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.61.0"))
+;; Package-Requires: ((emacs "28.1") (meow "1.5.0") (ghostel "0.64.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -29,8 +29,10 @@
 ;;
 ;; Outside semi-char input mode (`line' / `copy' / `emacs' / `char'
 ;; modes, or an alt-screen TUI) every command falls through to `meow-*'.
-;; Entering insert state leaves copy or Emacs mode; entering one of them
-;; from insert state switches to normal state.
+;; In line mode the kills, changes, and replacements are first limited to
+;; the input, as the text around it is read-only.  Entering insert state
+;; leaves copy or Emacs mode; entering one of them from insert state
+;; switches to normal state.
 ;;
 ;; Meow ships no default keybindings, so all commands are installed via
 ;; `[remap meow-*]' bindings and buffer-local `meow--kbd-*' overrides;
@@ -186,54 +188,97 @@ Comparable to `ghostel--cursor-pos''s row."
   (when ghostel--term-rows
     (- (line-number-at-pos (point) t) 1 (meow-ghostel--scrollback-lines))))
 
-;; Redraw: preserve meow point/selection semantics.  ghostel repaints the
-;; viewport on each redraw without snapping point to the cursor; right
-;; for normal state.  Point follows the cursor only in insert state
-;; (where typed chars land there); an active selection is restored around
-;; the repaint, and outside insert state it stays active even when the
-;; repaint rewrote its rows.
+;; Redraw: preserve meow point/selection semantics.  Point follows the
+;; cursor in insert state (where typed chars land there).  In normal and
+;; motion state without a selection it follows exactly while parked at the
+;; cursor, and keeps its column and its row offset from the cursor while
+;; elsewhere on or below the cursor's row; above that row it stays put.
+;; An active selection is restored around the repaint, and outside insert
+;; state it stays active even when the repaint rewrote its rows.
+
+(defun meow-ghostel--following-window-p ()
+  "Return non-nil when the buffer's window follows the live output.
+No window showing the buffer counts as following."
+  (let ((win (get-buffer-window (current-buffer) t)))
+    (or (null win) (ghostel--window-anchored-p win))))
+
+(defun meow-ghostel--cursor-bol ()
+  "Return the start of the terminal cursor's line, or nil."
+  (when ghostel--cursor-char-pos
+    (save-excursion
+      (goto-char ghostel--cursor-char-pos)
+      (line-beginning-position))))
 
 (defun meow-ghostel--around-redraw (orig-fn term &rest args)
   "Apply meow point/selection handling around `ghostel--redraw'.
-ORIG-FN is the advised function, called with TERM and ARGS (FULL, and
-FORCE-SYNC on ghostel 0.44+); its value is returned so callers can see
-whether rendering completed.  Skipped in alt-screen."
+ORIG-FN is the advised function, called with TERM and ARGS (FULL and
+FORCE-SYNC); its value is returned so callers can see whether rendering
+completed, and point moves only when it did.  Skipped in alt-screen."
   (if (and meow-ghostel-mode
            (not (ghostel--alt-screen-p term)))
       (let* ((region-p (region-active-p))
              (saved-mark (and region-p (mark t)))
+             ;; Sampled pre-render (window check included): only then does
+             ;; point on or below the cursor's row mean the user has not
+             ;; left the prompt; the render advances the cursor and a burst
+             ;; un-anchors the window.
+             (cursor-bol (meow-ghostel--cursor-bol))
+             (riding (and (not region-p)
+                          (or (meow-normal-mode-p) (meow-motion-mode-p))
+                          (eq ghostel--input-mode 'semi-char)
+                          cursor-bol
+                          (>= (point) cursor-bol)
+                          (meow-ghostel--following-window-p)))
+             (tracked (and riding (= (point) ghostel--cursor-char-pos)))
+             (saved-rows (and riding (not tracked)
+                              (count-lines cursor-bol (line-beginning-position))))
+             (saved-col (and saved-rows (current-column)))
              result)
         ;; The repaint's buffer edits set `deactivate-mark'; without
         ;; binding it, streaming output would drop an active selection
         ;; at the end of the current command.
         (let ((deactivate-mark nil))
           (setq result (apply orig-fn term args)))
-        ;; Don't drag point to the cursor while the user reads scrollback;
-        ;; redisplay would yank the viewport back to the bottom each frame.
-        ;; (No window showing the buffer → treat as following.)
-        ;; A `ghostel-inhibit-anchor-functions' veto (e.g. a compile
-        ;; buffer with `compilation-scroll-output' nil) blocks the drag
-        ;; the same way it blocks the window anchor.
-        (when (and (meow-insert-mode-p)
-                   (let ((win (get-buffer-window (current-buffer) t)))
-                     (and (or (null win) (ghostel--window-anchored-p win))
-                          (not (run-hook-with-args-until-success
-                                'ghostel-inhibit-anchor-functions win nil)))))
-          (meow-ghostel--reset-cursor-point))
+        (when result
+          (cond
+           (tracked
+            (when ghostel--cursor-char-pos
+              (goto-char ghostel--cursor-char-pos)))
+           (saved-col
+            (when ghostel--cursor-char-pos
+              (goto-char ghostel--cursor-char-pos)
+              (forward-line saved-rows)
+              ;; The buffer ends in an empty line below the last row.
+              (when (and (eobp) (bolp))
+                (forward-line -1))
+              (move-to-column saved-col)))
+           ;; Don't drag point to the cursor while the user reads
+           ;; scrollback; redisplay would yank the viewport back to the
+           ;; bottom each frame.  A `ghostel-inhibit-anchor-functions'
+           ;; veto (e.g. a compile buffer with `compilation-scroll-output'
+           ;; nil) blocks the drag the same way it blocks the window anchor.
+           ((and (meow-insert-mode-p)
+                 (meow-ghostel--following-window-p)
+                 (not (run-hook-with-args-until-success
+                       'ghostel-inhibit-anchor-functions
+                       (get-buffer-window (current-buffer) t) nil)))
+            (meow-ghostel--reset-cursor-point))))
         (when saved-mark
           (set-marker (mark-marker) (min saved-mark (point-max))))
         result)
     (apply orig-fn term args)))
 
 (defun meow-ghostel--anchor-inhibit (_window force)
-  "Veto ghostel's redraw anchor while point roams off the live cursor.
-A `ghostel-inhibit-anchor-functions' entry: returns non-nil outside
-insert state with point off the cursor, unless FORCE."
+  "Keep ghostel's redraw anchor off a point roaming off the live cursor.
+A `ghostel-inhibit-anchor-functions' entry for the states outside insert
+with point off the cursor: returns t above the cursor's row and
+`keep-point' on or below it.  Returns nil when FORCE."
   (and (not force)
        (meow-ghostel--active-p)
        (not (meow-insert-mode-p))
        ghostel--cursor-char-pos
-       (/= (point) ghostel--cursor-char-pos)))
+       (/= (point) ghostel--cursor-char-pos)
+       (if (< (point) (meow-ghostel--cursor-bol)) t 'keep-point)))
 
 (defun meow-ghostel--deactivate-repainted-region-p (&rest _)
   "Return non-nil where ghostel may deactivate a repainted selection.
@@ -273,7 +318,7 @@ is kept, but not inside a detected prompt."
       (meow-ghostel--reset-cursor-point)
       (when col
         (move-to-column col)
-        (when-let* ((start (meow-ghostel--input-start)))
+        (when-let* ((start (meow-ghostel--cursor-left-limit)))
           (goto-char (max (point) start)))))
     t))
 
@@ -323,41 +368,13 @@ act only in semi-char.  Other states keep ghostel's switches."
 ;; Input region: boundaries on the cursor row.  ghostel core provides the
 ;; prompt boundary (`ghostel-input-start-point'); we add the right edge.
 
-(defun meow-ghostel--fg-color (pos)
-  "Return the foreground color string of the cell at POS, or nil.
-The renderer stores each cell's color as a `face' plist `:foreground'."
-  (let ((face (get-text-property pos 'face)))
-    (cond ((and (consp face) (plist-member face :foreground))
-           (plist-get face :foreground))
-          ((facep face) (face-foreground face nil t)))))
-
-(defun meow-ghostel--greyed-out-p (color)
-  "Non-nil when COLOR (a hex string) is a dim, desaturated suggestion grey.
-Dim plus low-saturation is what separates a suggestion from a saturated
-syntax-highlight color (a cyan argument, a red invalid command)."
-  (let ((rgb (and (stringp color) (ignore-errors (color-values color)))))
-    (when rgb                              ; color-values channels are 0-65535
-      (let ((mx (apply #'max rgb))
-            (mn (apply #'min rgb)))
-        (and (< mx 49152)                  ; dim: not bright
-             (< (- mx mn) 13107))))))      ; grey: low saturation
-
 (defun meow-ghostel--suggestion-p (cursor region-end)
   "Non-nil when [CURSOR, REGION-END) looks like an autosuggestion.
-That is a single greyed-out color run to the region end, past typed input.
-Keys on `meow-ghostel--greyed-out-p', not luminance or color difference,
-which misfire under syntax highlighting."
+That is a single greyed-out color run to the region end, past typed input;
+see `ghostel--suggestion-p'."
   (and (meow-ghostel--input-start)            ; typed input precedes the cursor
        (< cursor region-end)                  ; a trailing run exists
-       (let ((typed (meow-ghostel--fg-color (1- cursor)))
-             (trail (meow-ghostel--fg-color cursor)))
-         (and trail
-              (not (equal trail typed))       ; trailing color differs from typed
-              (meow-ghostel--greyed-out-p trail) ; …and is a greyed-out color
-              ;; …uniform all the way to the end of the region:
-              (>= (or (next-single-property-change cursor 'face nil region-end)
-                      region-end)
-                  region-end)))))
+       (ghostel--suggestion-p cursor region-end (1- cursor))))
 
 (defun meow-ghostel--input-end ()
   "Return the position just after typed input on the cursor row, or nil.
@@ -397,6 +414,16 @@ marked as prompt, so there the prompt ends at the cursor on every row."
   (let ((s (ghostel-input-start-point)))
     (and s ghostel--cursor-char-pos (< s ghostel--cursor-char-pos) s)))
 
+(defun meow-ghostel--cursor-left-limit ()
+  "Return the input start the terminal cursor cannot move left of, or nil.
+A prompt ending at the cursor counts only when `ghostel-prompt-regexp' ends
+there too: a shell that sends OSC 133 A without B marks typed text as prompt."
+  (when-let* ((cursor ghostel--cursor-char-pos)
+              (start (ghostel-input-start-point))
+              ((or (< start cursor)
+                   (eql cursor (ghostel--regex-prompt-end cursor)))))
+    start))
+
 (defun meow-ghostel--clamp (beg end)
   "Clamp BEG..END to the editable input region; return a (BEG . END) cons.
 BEG is raised to `meow-ghostel--input-start', END lowered to
@@ -410,7 +437,45 @@ last word) can't over-delete past the live input.  END is never below BEG."
          (e (if input-end (min end input-end) end)))
     (cons b (max b e))))
 
-
+(defun meow-ghostel--line-mode-clamp (beg end)
+  "Clamp BEG..END to the line-mode input; return a (BEG . END) cons.
+A range that does not touch the input is returned as is.  Line mode
+makes the text before and after the input read-only."
+  (let ((start (marker-position ghostel--line-input-start))
+        (input-end (marker-position ghostel--line-input-end)))
+    (if (or (> beg input-end) (< end start))
+        (cons beg end)
+      (let ((b (min (max beg start) input-end)))
+        (cons b (max b (min end input-end)))))))
+
+(defun meow-ghostel--line-mode-call (command)
+  "Call COMMAND with its selection limited to the line-mode input.
+The selection is clamped to the input and COMMAND runs narrowed to it,
+so neither the selection nor the newline a line kill takes reaches the
+read-only text around the input.  A selection the clamp empties is
+cancelled with point where it was clamped to, and COMMAND does not run;
+return nil then, else non-nil.  Without a selection, COMMAND's
+`meow-selection-command-fallback' runs narrowed."
+  (if (not (region-active-p))
+      (progn
+        (ghostel--line-mode-in-input
+         (lambda () (meow-ghostel--selection-fallback command)))
+        t)
+    (let* ((beg (region-beginning))
+           (end (region-end))
+           (clamped (meow-ghostel--line-mode-clamp beg end))
+           (b (car clamped))
+           (e (cdr clamped)))
+      (if (and (= b e) (< beg end))
+          (progn (meow--cancel-selection)
+                 (goto-char b)
+                 nil)
+        (let ((backward (meow--direction-backward-p)))
+          (set-marker (mark-marker) (if backward e b))
+          (goto-char (if backward b e)))
+        (ghostel--line-mode-in-input (lambda () (call-interactively command)))
+        t))))
+
 ;; PTY-driven input editing.  Drive the shell's line editor (readline/zle/fish)
 ;; with arrow keys, backspaces, and bracketed paste over the PTY.
 ;; Only meaningful in semi-char input mode.
@@ -449,7 +514,7 @@ but the shell's line editor still steps over it."
 On the cursor row a rightward target is clamped to `meow-ghostel--input-end',
 so the move never right-arrows across a trailing autosuggestion, which the
 shell would accept (zsh-autosuggestions / fish).  A leftward one is clamped
-to the input start after a detected prompt.  Only meaningful in semi-char
+to `meow-ghostel--cursor-left-limit'.  Only meaningful in semi-char
 mode.  Returns non-nil when it ran.
 Both ends of the horizontal move are measured with
 `meow-ghostel--cell-column'."
@@ -466,7 +531,7 @@ Both ends of the horizontal move are measured with
             ;; `input-end' excludes it, so stopping there never accepts.
             (setq pos (min pos (or (meow-ghostel--input-end) pos)))
           ;; The shell cannot move left into the prompt.
-          (when-let* ((start (meow-ghostel--input-start)))
+          (when-let* ((start (meow-ghostel--cursor-left-limit)))
             (setq pos (max pos start)))))
       (let ((dx (- (meow-ghostel--cell-column pos) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
@@ -677,8 +742,12 @@ rather than through `meow-open-above'."
 The range is clamped to the current input; the killed text still lands
 on the kill ring.  Join-type selections are treated as plain regions."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-kill)
+  (cond
+   ((meow-ghostel--line-mode-active-p)
+    (meow-ghostel--line-mode-call #'meow-kill))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-kill))
+   (t
     (if (not (region-active-p))
         (meow-ghostel--selection-fallback 'meow-kill)
       (let* ((clamped (meow-ghostel--clamp (region-beginning) (region-end)))
@@ -690,13 +759,17 @@ on the kill ring.  Join-type selections are treated as plain regions."
         (unless (string-empty-p text)
           (let ((select-enable-clipboard meow-use-clipboard))
             (kill-new text)))
-        (meow-ghostel-delete-input-region beg end)))))
+        (meow-ghostel-delete-input-region beg end))))))
 
 (defun meow-ghostel-kill-append ()
   "Kill the selection through the terminal, appending to the latest kill."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-kill-append)
+  (cond
+   ((meow-ghostel--line-mode-active-p)
+    (meow-ghostel--line-mode-call #'meow-kill-append))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-kill-append))
+   (t
     (if (not (region-active-p))
         (meow-ghostel--selection-fallback 'meow-kill-append)
       (let* ((clamped (meow-ghostel--clamp (region-beginning) (region-end)))
@@ -708,13 +781,28 @@ on the kill ring.  Join-type selections are treated as plain regions."
         (unless (string-empty-p text)
           (let ((select-enable-clipboard meow-use-clipboard))
             (kill-append (meow--prepare-string-for-kill-append text) nil)))
-        (meow-ghostel-delete-input-region beg end)))))
+        (meow-ghostel-delete-input-region beg end))))))
 
 (defun meow-ghostel-kill-whole-line ()
-  "Kill the whole input line through the terminal."
+  "Kill the whole input line through the terminal.
+In line mode, from inside the input, kill the line within the input."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-kill-whole-line)
+  (cond
+   ((and (meow-ghostel--line-mode-active-p)
+         (<= ghostel--line-input-start (point) ghostel--line-input-end))
+    (let* ((start (marker-position ghostel--line-input-start))
+           (input-end (marker-position ghostel--line-input-end))
+           (beg (max (line-beginning-position) start))
+           (end (min (1+ (line-end-position)) input-end)))
+      ;; Like on a buffer's last line, take the newline before it.
+      (when (and (= end input-end) (> beg start) (eq (char-before beg) ?\n))
+        (setq beg (1- beg)))
+      (when (< beg end)
+        (let ((select-enable-clipboard meow-use-clipboard))
+          (kill-region beg end)))))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-kill-whole-line))
+   (t
     (let* ((clamped (meow-ghostel--clamp (line-beginning-position)
                                          (line-end-position)))
            (beg (car clamped))
@@ -724,7 +812,7 @@ on the kill ring.  Join-type selections are treated as plain regions."
       (unless (string-empty-p text)
         (let ((select-enable-clipboard meow-use-clipboard))
           (kill-new text)))
-      (meow-ghostel-delete-input-region beg end))))
+      (meow-ghostel-delete-input-region beg end)))))
 
 (defun meow-ghostel-C-k ()
   "Kill from point to the end of input through the terminal.
@@ -771,47 +859,56 @@ exits the shell."
 ;; land on the kill ring while the shell's line stayed untouched.  Remap the
 ;; four wrapper commands instead.  The backward pair need their own entries:
 ;; they reach the forward pair by plain funcall, which no remap intercepts.
+;; In line mode the remaps keep the kill off the read-only text around the
+;; input.
 
 (defun meow-ghostel--kill-thing (thing arg)
   "Kill ARG THINGs from point through the terminal; ARG may be negative.
 The range is clamped to the current input; the killed text still lands
-on the kill ring.  Semi-char only."
-  (let* ((origin (point))
-         (target (save-excursion (forward-thing thing arg) (point)))
-         (clamped (meow-ghostel--clamp (min origin target) (max origin target)))
-         (beg (car clamped))
-         (end (cdr clamped))
-         (text (ghostel--filter-soft-wraps (filter-buffer-substring beg end))))
-    (unless (string-empty-p text)
-      (let ((select-enable-clipboard meow-use-clipboard))
-        (kill-new text)))
-    (meow-ghostel-delete-input-region beg end)))
+on the kill ring.  In line mode `meow-kill-thing' runs narrowed to the
+input."
+  (if (meow-ghostel--line-mode-active-p)
+      (ghostel--line-mode-in-input (lambda () (meow-kill-thing thing arg)))
+    (let* ((origin (point))
+           (target (save-excursion (forward-thing thing arg) (point)))
+           (clamped (meow-ghostel--clamp (min origin target) (max origin target)))
+           (beg (car clamped))
+           (end (cdr clamped))
+           (text (ghostel--filter-soft-wraps (filter-buffer-substring beg end))))
+      (unless (string-empty-p text)
+        (let ((select-enable-clipboard meow-use-clipboard))
+          (kill-new text)))
+      (meow-ghostel-delete-input-region beg end))))
+
+(defun meow-ghostel--thing-kill-p ()
+  "Return non-nil when the thing kills need `meow-ghostel--kill-thing'."
+  (or (meow-ghostel--active-p) (meow-ghostel--line-mode-active-p)))
 
 (defun meow-ghostel-kill-word (arg)
   "Kill ARG `meow-word-thing's forward through the terminal."
   (interactive "p")
-  (if (not (meow-ghostel--active-p))
+  (if (not (meow-ghostel--thing-kill-p))
       (call-interactively #'meow-kill-word)
     (meow-ghostel--kill-thing meow-word-thing arg)))
 
 (defun meow-ghostel-backward-kill-word (arg)
   "Kill ARG `meow-word-thing's backward through the terminal."
   (interactive "p")
-  (if (not (meow-ghostel--active-p))
+  (if (not (meow-ghostel--thing-kill-p))
       (call-interactively #'meow-backward-kill-word)
     (meow-ghostel--kill-thing meow-word-thing (- arg))))
 
 (defun meow-ghostel-kill-symbol (arg)
   "Kill ARG `meow-symbol-thing's forward through the terminal."
   (interactive "p")
-  (if (not (meow-ghostel--active-p))
+  (if (not (meow-ghostel--thing-kill-p))
       (call-interactively #'meow-kill-symbol)
     (meow-ghostel--kill-thing meow-symbol-thing arg)))
 
 (defun meow-ghostel-backward-kill-symbol (arg)
   "Kill ARG `meow-symbol-thing's backward through the terminal."
   (interactive "p")
-  (if (not (meow-ghostel--active-p))
+  (if (not (meow-ghostel--thing-kill-p))
       (call-interactively #'meow-backward-kill-symbol)
     (meow-ghostel--kill-thing meow-symbol-thing (- arg))))
 
@@ -820,10 +917,17 @@ on the kill ring.  Semi-char only."
 
 (defun meow-ghostel-change ()
   "Change the selection through the terminal, then enter insert state.
-Like `meow-change', the deleted text is not saved to the kill ring."
+Like `meow-change', the deleted text is not saved to the kill ring.
+In line mode the selection is limited to the input."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-change)
+  (cond
+   ((meow-ghostel--line-mode-active-p)
+    (unless (meow-ghostel--line-mode-call #'meow-change)
+      (meow--switch-state 'insert)
+      (setq-local meow--insert-pos (point))))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-change))
+   (t
     (if (not (region-active-p))
         (meow-ghostel--selection-fallback 'meow-change)
       (let* ((clamped (meow-ghostel--clamp (region-beginning) (region-end)))
@@ -832,7 +936,7 @@ Like `meow-change', the deleted text is not saved to the kill ring."
         (meow--cancel-selection)
         (meow-ghostel-delete-input-region beg end)
         (meow--switch-state 'insert)
-        (setq-local meow--insert-pos (point))))))
+        (setq-local meow--insert-pos (point)))))))
 
 (defun meow-ghostel-change-char ()
   "Delete the character at point through the terminal, then insert state."
@@ -846,23 +950,35 @@ Like `meow-change', the deleted text is not saved to the kill ring."
     (setq-local meow--insert-pos (point))))
 
 (defun meow-ghostel-change-save ()
-  "Kill the selection through the terminal, then enter insert state."
+  "Kill the selection through the terminal, then enter insert state.
+In line mode the selection is limited to the input."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-change-save)
-    (when (region-active-p)
-      (meow-ghostel-kill)
+  (cond
+   ((meow-ghostel--line-mode-active-p)
+    (when (and (region-active-p)
+               (not (meow-ghostel--line-mode-call #'meow-change-save)))
       (meow--switch-state 'insert)
-      (setq-local meow--insert-pos (point)))))
+      (setq-local meow--insert-pos (point))))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-change-save))
+   ((region-active-p)
+    (meow-ghostel-kill)
+    (meow--switch-state 'insert)
+    (setq-local meow--insert-pos (point)))))
 
 
 ;; Replace
 
 (defun meow-ghostel-replace ()
-  "Replace the selection with the current kill through the terminal."
+  "Replace the selection with the current kill through the terminal.
+In line mode the selection is limited to the input."
   (interactive)
-  (if (not (meow-ghostel--active-p))
-      (call-interactively #'meow-replace)
+  (cond
+   ((meow-ghostel--line-mode-active-p)
+    (meow-ghostel--line-mode-call #'meow-replace))
+   ((not (meow-ghostel--active-p))
+    (call-interactively #'meow-replace))
+   (t
     (if (not (region-active-p))
         (meow-ghostel--selection-fallback 'meow-replace)
       (when-let* ((s (let ((select-enable-clipboard meow-use-clipboard))
@@ -871,7 +987,7 @@ Like `meow-change', the deleted text is not saved to the kill ring."
                (beg (car clamped))
                (end (cdr clamped)))
           (meow--cancel-selection)
-          (meow-ghostel-replace-input-region beg end s))))))
+          (meow-ghostel-replace-input-region beg end s)))))))
 
 (defun meow-ghostel-replace-char ()
   "Replace the character at point with the current kill via the terminal."
@@ -996,7 +1112,7 @@ mode is buffer-local; see `meow-ghostel-escape' for the default."
   (let ((target
          (if arg
              (let ((n (prefix-numeric-value arg)))
-               (or (nth (1- n) meow-ghostel--escape-modes)
+               (or (and (> n 0) (nth (1- n) meow-ghostel--escape-modes))
                    (user-error
                     "Invalid prefix %d; use 1 (auto), 2 (terminal), or 3 (meow)"
                     n)))
@@ -1176,9 +1292,10 @@ Enabling installs global advice while any buffer has the mode enabled."
         (add-hook 'meow-insert-enter-hook
                   #'meow-ghostel--insert-enter nil t)
         ;; Let normal-state navigation roam point off the live cursor
-        ;; without the per-redraw anchor snapping it back.
+        ;; without the per-redraw anchor snapping it back.  Late, so that
+        ;; another function's full veto wins over `keep-point'.
         (add-hook 'ghostel-inhibit-anchor-functions
-                  #'meow-ghostel--anchor-inhibit nil t)
+                  #'meow-ghostel--anchor-inhibit 90 t)
         (advice-add 'ghostel--redraw :around #'meow-ghostel--around-redraw)
         (advice-add 'ghostel--deactivate-repainted-region :before-while
                     #'meow-ghostel--deactivate-repainted-region-p)

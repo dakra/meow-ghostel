@@ -735,18 +735,84 @@ remaps in our ordinary minor-mode map still apply at dispatch time."
 ;; Test: around-redraw point and selection policy
 ;; -----------------------------------------------------------------------
 
-(ert-deftest meow-ghostel-test-around-redraw-does-not-restore-normal-point ()
-  "In normal state the redraw advice leaves point where the user put it."
-  (meow-ghostel-test--with-meow-buffer
-   (insert "hello world")
-   (setq-local ghostel--term 'fake)
-   (setq-local ghostel--cursor-pos '(11 . 0))
-   (setq-local ghostel--cursor-char-pos 12)
-   (meow--switch-state 'normal)
-   (goto-char 3)
-   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
-     (meow-ghostel--around-redraw #'ignore 'fake))
-   (should (= 3 (point)))))
+(defun meow-ghostel-test--scroll-output (lines)
+  "Return a `ghostel--redraw' stand-in that draws LINES rows of output.
+Like an inline program, it inserts them above the cursor's row and moves
+the cursor down with them; point keeps its buffer position.  Returns t."
+  (lambda (&rest _)
+    (let ((pt (point)))
+      (goto-char (meow-ghostel--cursor-bol))
+      (meow-ghostel-test--insert (apply #'concat (make-list lines "out\n")))
+      (goto-char pt))
+    (setq ghostel--cursor-char-pos (+ ghostel--cursor-char-pos (* 4 lines)))
+    t))
+
+(defmacro meow-ghostel-test--with-status-rows (&rest body)
+  "Run BODY on a prompt row holding the cursor and two status rows below.
+The cursor sits after \"> in\" (position 5) in normal state."
+  (declare (indent 0) (debug t))
+  `(meow-ghostel-test--with-meow-buffer
+    (insert "> in\nstatus-1\nstatus-2\n")
+    (setq-local ghostel--cursor-pos '(4 . 0))
+    (setq-local ghostel--cursor-char-pos 5)
+    (meow--switch-state 'normal)
+    ,@body))
+
+(ert-deftest meow-ghostel-test-around-redraw-rides-cursor-row ()
+  "In normal state, point elsewhere on the cursor's row keeps its column
+while output scrolls the row down."
+  (meow-ghostel-test--with-status-rows
+    (goto-char 3)
+    (meow-ghostel--around-redraw (meow-ghostel-test--scroll-output 3) 'fake)
+    (should (= 4 (line-number-at-pos)))
+    (should (= 2 (current-column)))))
+
+(ert-deftest meow-ghostel-test-around-redraw-rides-below-cursor-row ()
+  "In normal state, point below the cursor's row keeps its row offset and
+column while output scrolls."
+  (meow-ghostel-test--with-status-rows
+    (goto-char (point-min))
+    (forward-line 2)
+    (move-to-column 3)
+    (meow-ghostel--around-redraw (meow-ghostel-test--scroll-output 3) 'fake)
+    (should (= 6 (line-number-at-pos)))
+    (should (looking-at-p "tus-2"))))
+
+(ert-deftest meow-ghostel-test-around-redraw-tracks-cursor ()
+  "In normal state, point parked at the cursor follows it exactly."
+  (meow-ghostel-test--with-status-rows
+    (goto-char 5)
+    (meow-ghostel--around-redraw (meow-ghostel-test--scroll-output 2) 'fake)
+    (should (= (point) ghostel--cursor-char-pos))))
+
+(ert-deftest meow-ghostel-test-around-redraw-keeps-point-above-cursor-row ()
+  "In normal state, point above the cursor's row stays where it is."
+  (meow-ghostel-test--with-status-rows
+    (setq-local ghostel--cursor-pos '(0 . 1))
+    (setq-local ghostel--cursor-char-pos 6)
+    (goto-char 3)
+    (meow-ghostel--around-redraw (meow-ghostel-test--scroll-output 2) 'fake)
+    (should (= 3 (point)))))
+
+(ert-deftest meow-ghostel-test-around-redraw-keeps-point-with-selection ()
+  "Point does not ride the cursor while a selection is active."
+  (meow-ghostel-test--with-status-rows
+    (goto-char 3)
+    (push-mark 2 t t)
+    (meow-ghostel--around-redraw (meow-ghostel-test--scroll-output 2) 'fake)
+    (should (= 3 (point)))
+    (should (region-active-p))))
+
+(ert-deftest meow-ghostel-test-around-redraw-keeps-point-unrendered ()
+  "Point does not move when the redraw did not render."
+  (meow-ghostel-test--with-status-rows
+    (goto-char 3)
+    (meow-ghostel--around-redraw
+     (lambda (&rest args)
+       (apply (meow-ghostel-test--scroll-output 2) args)
+       nil)
+     'fake)
+    (should (= 3 (point)))))
 
 (ert-deftest meow-ghostel-test-around-redraw-snaps-point-in-insert ()
   "In insert state the redraw advice snaps point to the terminal cursor.
@@ -760,7 +826,7 @@ The temp buffer has no window, which counts as anchored/following."
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
      (meow--switch-state 'insert)
      (goto-char (point-min))
-     (meow-ghostel--around-redraw #'ignore 'fake)
+     (meow-ghostel--around-redraw (lambda (&rest _) t) 'fake)
      (should (= 11 (current-column))))))
 
 (ert-deftest meow-ghostel-test-around-redraw-restores-selection ()
@@ -843,7 +909,7 @@ while the user reads scrollback."
              ((symbol-function 'ghostel--window-anchored-p) (lambda (_) nil)))
      (meow--switch-state 'insert)
      (goto-char (point-min))
-     (meow-ghostel--around-redraw #'ignore 'fake)
+     (meow-ghostel--around-redraw (lambda (&rest _) t) 'fake)
      (should (= (point) (point-min))))))
 
 (ert-deftest meow-ghostel-test-around-redraw-honors-anchor-veto ()
@@ -867,7 +933,7 @@ The veto sees the window showing the buffer and a nil FORCE."
                  nil t)
        (meow--switch-state 'insert)
        (goto-char (point-min))
-       (meow-ghostel--around-redraw #'ignore 'fake)
+       (meow-ghostel--around-redraw (lambda (&rest _) t) 'fake)
        (should (= (point) (point-min)))
        (should (equal veto-args '(fake-win nil)))))))
 
@@ -920,8 +986,9 @@ returns the original's value."
              ((symbol-function 'meow-ghostel--insert-enter) #'ignore))
      (meow--switch-state 'normal)
      (goto-char 3)
-     ;; Normal state, point off cursor: veto.
-     (should (meow-ghostel--anchor-inhibit nil nil))
+     ;; Normal state, point off the cursor on its row: anchor the
+     ;; viewport, not point.
+     (should (eq 'keep-point (meow-ghostel--anchor-inhibit nil nil)))
      ;; FORCE overrides the veto.
      (should-not (meow-ghostel--anchor-inhibit nil t))
      ;; Point on the cursor: no veto.
@@ -935,6 +1002,29 @@ returns the original's value."
      (meow--switch-state 'normal)
      (let ((ghostel--input-mode 'copy))
        (should-not (meow-ghostel--anchor-inhibit nil nil))))))
+
+(ert-deftest meow-ghostel-test-anchor-inhibit-full-veto-above-cursor-row ()
+  "Above the cursor's row the anchor veto is full; on or below it, only
+point is kept."
+  (meow-ghostel-test--with-status-rows
+    (setq-local ghostel--cursor-pos '(0 . 1))
+    (setq-local ghostel--cursor-char-pos 6)
+    (goto-char 3)
+    (should (eq t (meow-ghostel--anchor-inhibit nil nil)))
+    (goto-char (point-max))
+    (should (eq 'keep-point (meow-ghostel--anchor-inhibit nil nil)))))
+
+(ert-deftest meow-ghostel-test-anchor-inhibit-runs-late ()
+  "The anchor veto runs after functions added before the mode, so their
+full veto wins."
+  (meow-ghostel-test--with-meow-buffer
+   (let ((other (lambda (&rest _) t)))
+     (meow-ghostel-mode -1)
+     (add-hook 'ghostel-inhibit-anchor-functions other nil t)
+     (meow-ghostel-mode 1)
+     (should (eq other (car ghostel-inhibit-anchor-functions)))
+     (should (memq 'meow-ghostel--anchor-inhibit
+                   (cdr ghostel-inhibit-anchor-functions))))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: reset-cursor-point
@@ -1043,9 +1133,7 @@ The two differ once a cell left of the cursor is hidden."
         (meow-ghostel-goto-input-position ghostel--cursor-char-pos))
       (should (zerop (length keys-sent))))))
 
-;; The color-based suggestion detection (`suggestion-p'/`greyed-out-p') is
-;; not exercisable under `--batch' (`color-values' has no display frame),
-;; so these test the clamp contract directly by stubbing
+;; These test the clamp contract directly by stubbing
 ;; `meow-ghostel--input-end' — the boundary a rightward target is trimmed
 ;; to.  Live coverage is the elate boundary suites.
 
@@ -1192,6 +1280,20 @@ command reads `ghostel--cursor-pos'."
                (lambda (&rest _) t)))
       (should (= ghostel--cursor-char-pos (meow-ghostel--input-end))))))
 
+(ert-deftest meow-ghostel-test-input-end-excludes-grey-suggestion ()
+  "A trailing grey run after differently colored typed input is a suggestion."
+  (meow-ghostel-test--with-cursor-fixture "$ " "ls" " --all"
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (put-text-property 3 5 'face '(:foreground "#e0e0e0"))
+      (put-text-property 5 (point-max) 'face '(:foreground "#808080")))
+    (should (= ghostel--cursor-char-pos (meow-ghostel--input-end)))
+    ;; A saturated trailing color (syntax highlighting) is typed input.
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (put-text-property 5 (point-max) 'face '(:foreground "#00a0c0")))
+    (should (= (point-max) (meow-ghostel--input-end)))))
+
 (ert-deftest meow-ghostel-test-input-end-strips-padding ()
   "Without a `ghostel-input' region, trailing blanks are stripped,
 but never past the live cursor."
@@ -1285,6 +1387,25 @@ clamping to it would block every leftward move."
       (should (= 8 (point)))
       (should (equal sent (make-list 5 "left"))))))
 
+(ert-deftest meow-ghostel-test-empty-input-prompt-matching-regexp-bounds-left ()
+  "On an empty input, a prompt that the regexp also ends at the cursor
+is the left limit: a leftward move from inside it sends no arrows."
+  (meow-ghostel-test--with-input-fixture "> " ""
+    (should (= 3 ghostel--cursor-char-pos))
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key &rest _) (push key sent)))
+                ((symbol-function 'meow-ghostel--sync-render) #'ignore))
+        (let ((ghostel-prompt-regexp "^> "))
+          (should (= 3 (meow-ghostel--cursor-left-limit)))
+          (meow-ghostel-goto-input-position 1)
+          (should (= 3 (point)))
+          (should-not sent))
+        (let ((ghostel-prompt-regexp nil))
+          (should-not (meow-ghostel--cursor-left-limit))
+          (meow-ghostel-goto-input-position 1)
+          (should (equal sent '("left" "left"))))))))
+
 (ert-deftest meow-ghostel-test-insert-in-osc133-prompt-lands-at-input-start ()
   "Insert from inside an OSC 133 prompt stops at the input start.
 The arrows cover the typed input only, once."
@@ -1344,7 +1465,8 @@ The arrows cover the typed input only, once."
                ((symbol-function 'meow-ghostel--sync-render) #'ignore)
                (ghostel--cursor-pos '(1 . 0))
                (ghostel--cursor-char-pos 2))
-       (should (> (ghostel--cursor-row-input-start) 2))
+       ;; Clamped to the cursor; the regexp itself ends past it.
+       (should (= (ghostel--cursor-row-input-start) 2))
        (meow-ghostel-goto-input-position 1)
        (should (= (point) 1))
        (should (equal sent '("left")))))))
@@ -2039,6 +2161,191 @@ so line mode's own keymap cannot misroute it."
       (should (equal " world" (buffer-string)))
       (should (equal "hello" (car kill-ring))))))
 
+(defmacro meow-ghostel-test--with-protected-line-mode (text start end &rest body)
+  "Line mode over TEXT with input START..END and the text around it read-only.
+Runs BODY in normal state with an empty kill ring."
+  (declare (indent 3) (debug t))
+  `(meow-ghostel-test--with-line-mode ,text ,start ,end
+     (ghostel--line-mode-apply-readonly ,start ,end)
+     (meow--switch-state 'normal)
+     (let ((kill-ring nil)
+           (kill-ring-yank-pointer nil))
+       ,@body)))
+
+(defun meow-ghostel-test--select (selection)
+  "Activate SELECTION with point at its end.
+The optional arguments of `meow--select' differ between meow releases."
+  (meow--select selection)
+  (activate-mark))
+
+(defun meow-ghostel-test--select-line ()
+  "Select the current line as `meow-line' does."
+  (meow-ghostel-test--select
+   (meow--make-selection '(expand . line)
+                         (line-beginning-position)
+                         (line-end-position))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-line-selection-clears-input ()
+  "A line selection over the prompt row kills only the input; the prompt
+and the read-only rows after the input stay."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hello\nstatus" 3 13
+    (goto-char 5)
+    (meow-ghostel-test--select-line)
+    (meow-ghostel-kill)
+    (should (equal "$ \nstatus" (buffer-string)))
+    (should (equal "echo hello" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-last-input-line ()
+  "Killing the last line of a multi-line input leaves an empty line, as
+on a buffer's last line, without touching the text after the input."
+  (meow-ghostel-test--with-protected-line-mode "$ ab\ncd\nstatus" 3 8
+    (goto-char 7)
+    (meow-ghostel-test--select-line)
+    (meow-ghostel-kill)
+    (should (equal "$ ab\n\nstatus" (buffer-string)))
+    (should (equal "cd" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-plain-region ()
+  "A region without a meow selection type, such as a mouse drag, is
+clamped to the input too."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (goto-char (point-max))
+    (push-mark 1 t t)
+    (should-not (meow--selection-type))
+    (meow-ghostel-kill)
+    (should (equal "$  suggest" (buffer-string)))
+    (should (equal "echo hi" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-append-line-selection ()
+  "Kill-append of a line selection keeps meow's newline separator."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hello\nstatus" 3 13
+    (kill-new "prev")
+    (goto-char 5)
+    (meow-ghostel-test--select-line)
+    (meow-ghostel-kill-append)
+    (should (equal "$ \nstatus" (buffer-string)))
+    (should (equal "prev\necho hello" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-without-selection ()
+  "Kill without a selection in line mode runs the C-k fallback within
+the input."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (goto-char 8)
+    (meow-ghostel-kill)
+    (should (equal "$ echo  suggest" (buffer-string)))
+    (should (equal "hi" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-change-without-selection-at-end ()
+  "Change without a selection at the input end acts as at the end of a
+buffer: the read-only text after the input is not deleted."
+  (meow-ghostel-test--with-protected-line-mode "$ hi suggest" 3 5
+    (goto-char 5)
+    (meow-ghostel-change)
+    (should (equal "$ hi suggest" (buffer-string)))
+    (should (= 5 (point)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-inner-input-line ()
+  "Killing an inner line of a multi-line input takes its own newline."
+  (meow-ghostel-test--with-protected-line-mode "$ ab\ncd\nstatus" 3 8
+    (goto-char 4)
+    (meow-ghostel-test--select-line)
+    (meow-ghostel-kill)
+    (should (equal "cd\nstatus" (substring (buffer-string) 2)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-after-input-is-noop ()
+  "A selection the clamp empties kills nothing and leaves the kill ring."
+  (meow-ghostel-test--with-protected-line-mode "$ hi suggest" 3 5
+    (goto-char 5)
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) 5 (point-max)))
+    (meow-ghostel-kill)
+    (should (equal "$ hi suggest" (buffer-string)))
+    (should-not kill-ring)
+    (should-not (region-active-p))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-append-clamps ()
+  "Kill-append in line mode appends only the input part of the selection."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (kill-new "x")
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) 8 (point-max)))
+    (meow-ghostel-kill-append)
+    (should (equal "$ echo  suggest" (buffer-string)))
+    (should (equal "xhi" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-change-clamps ()
+  "Change in line mode deletes only the input part, then enters insert."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) (point-max) 8))
+    (meow-ghostel-change)
+    (should (equal "$ echo  suggest" (buffer-string)))
+    (should (= 8 (point)))
+    (should (meow-insert-mode-p))))
+
+(ert-deftest meow-ghostel-test-line-mode-change-emptied-enters-insert ()
+  "A change the clamp empties enters insert state at the input end."
+  (meow-ghostel-test--with-protected-line-mode "$ hi suggest" 3 5
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) 5 (point-max)))
+    (meow-ghostel-change)
+    (should (equal "$ hi suggest" (buffer-string)))
+    (should (= 5 (point)))
+    (should (meow-insert-mode-p))))
+
+(ert-deftest meow-ghostel-test-line-mode-change-save-clamps ()
+  "Change-save in line mode kills only the input part, then enters insert."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) 8 (point-max)))
+    (meow-ghostel-change-save)
+    (should (equal "$ echo  suggest" (buffer-string)))
+    (should (equal "hi" (car kill-ring)))
+    (should (meow-insert-mode-p))))
+
+(ert-deftest meow-ghostel-test-line-mode-replace-clamps ()
+  "Replace in line mode replaces only the input part of the selection."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (kill-new "X")
+    (meow-ghostel-test--select
+     (meow--make-selection '(expand . char) 1 10))
+    (meow-ghostel-replace)
+    (should (equal "$ X suggest" (buffer-string)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-whole-line ()
+  "Kill-whole-line in line mode kills the input line, not the prompt."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hello\nstatus" 3 13
+    (goto-char 5)
+    (meow-ghostel-kill-whole-line)
+    (should (equal "$ \nstatus" (buffer-string)))
+    (should (equal "echo hello" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-kill-word-stops-at-input-end ()
+  "A thing kill in line mode stops at the end of the input."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi suggest" 3 10
+    (goto-char 8)
+    (meow-ghostel-kill-word 2)
+    (should (equal "$ echo  suggest" (buffer-string)))
+    (should (equal "hi" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-backward-kill-word-stops-at-input-start ()
+  "A backward thing kill in line mode stops at the start of the input."
+  (meow-ghostel-test--with-protected-line-mode "$ echo hi" 3 10
+    (goto-char 5)
+    (meow-ghostel-backward-kill-word 3)
+    (should (equal "$ ho hi" (buffer-string)))
+    (should (equal "ec" (car kill-ring)))))
+
+(ert-deftest meow-ghostel-test-line-mode-repeated-backward-kill-prepends ()
+  "Consecutive backward thing kills in line mode build the kill in order."
+  (meow-ghostel-test--with-protected-line-mode "$ ls foo-bar" 3 13
+    (goto-char 13)
+    (meow-ghostel-backward-kill-word 1)
+    (setq last-command 'kill-region)
+    (meow-ghostel-backward-kill-word 1)
+    (should (equal "$ ls " (buffer-string)))
+    (should (equal "foo-bar" (car kill-ring)))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: fall-through outside ghostel / when inactive
 ;; -----------------------------------------------------------------------
@@ -2201,7 +2508,9 @@ so line mode's own keymap cannot misroute it."
 (ert-deftest meow-ghostel-test-escape-toggle-prefix-invalid ()
   "An out-of-range prefix signals a `user-error'."
   (meow-ghostel-test--with-meow-buffer
-   (should-error (meow-ghostel-toggle-send-escape 4) :type 'user-error)))
+   (should-error (meow-ghostel-toggle-send-escape 4) :type 'user-error)
+   (should-error (meow-ghostel-toggle-send-escape 0) :type 'user-error)
+   (should-error (meow-ghostel-toggle-send-escape -1) :type 'user-error)))
 
 (ert-deftest meow-ghostel-test-escape-mode-buffer-local ()
   "The ESC routing mode is buffer-local."
